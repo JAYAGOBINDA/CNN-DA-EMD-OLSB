@@ -307,8 +307,12 @@ def run_steganalysis(
         if len(Xva) > 0:
             model.eval()
             with torch.no_grad():
-                vl = model(torch.from_numpy(Xva).to(device))
-                va_acc = ((torch.sigmoid(vl) > 0.5).float().cpu().numpy() == yva).mean()
+                va_preds = []
+                for ci in range(0, len(Xva), batch_size):
+                    chunk = torch.from_numpy(Xva[ci:ci+batch_size]).to(device)
+                    va_preds.append((torch.sigmoid(model(chunk)) > 0.5).float().cpu().numpy())
+                va_preds_all = np.concatenate(va_preds)
+                va_acc = (va_preds_all.flatten() == yva).mean()
 
         history.append({
             "epoch": ep + 1,
@@ -320,8 +324,12 @@ def run_steganalysis(
     # ── Evaluate on test set ─────────────────────────────────────────────────
     model.eval()
     with torch.no_grad():
-        logits_te = model(torch.from_numpy(Xte).to(device))
-        probs_te  = torch.sigmoid(logits_te).cpu().numpy()
+        logits_chunks = []
+        for ci in range(0, len(Xte), batch_size):
+            chunk = torch.from_numpy(Xte[ci:ci+batch_size]).to(device)
+            logits_chunks.append(model(chunk).cpu())
+        logits_te = torch.cat(logits_chunks)
+        probs_te  = torch.sigmoid(logits_te).numpy()
         preds_te  = (probs_te > 0.5).astype(int)
 
     labels_te = yte.astype(int)

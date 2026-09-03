@@ -45,14 +45,107 @@ from research.steganalysis import (
 )
 
 # ── Shared styling helpers ────────────────────────────────────────────────────
-_CARD = """
-<div style="background:rgba(15,23,42,0.7);border:1px solid rgba(99,102,241,0.25);
-border-radius:14px;padding:1.1rem 1.3rem;margin-bottom:0.8rem;">
-{}</div>"""
 
-_BADGE_OK   = "🟢"
-_BADGE_FAIL = "🔴"
-_BADGE_WARN = "🟡"
+_RESEARCH_CSS = """
+<style>
+.research-card {
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    border-radius: 16px;
+    padding: 1.2rem 1.4rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(12px);
+}
+
+.research-card h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.08rem;
+    font-weight: 700;
+    color: #e2e8f0;
+}
+
+.research-card p, .research-card li {
+    color: #94a3b8;
+    font-size: 0.92rem;
+    line-height: 1.55;
+    margin: 0;
+}
+
+.step-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.82rem;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    margin-right: 0.6rem;
+    flex-shrink: 0;
+}
+
+.step-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.6rem;
+}
+
+.step-text {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #c7d2fe;
+}
+
+.status-pill {
+    display: inline-block;
+    padding: 0.25rem 0.8rem;
+    border-radius: 50px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.status-ready {
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    color: #4ade80;
+}
+
+.status-pending {
+    background: rgba(251, 146, 60, 0.12);
+    border: 1px solid rgba(251, 146, 60, 0.3);
+    color: #fb923c;
+}
+
+.metric-highlight {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(168, 85, 247, 0.12));
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: 12px;
+    padding: 0.6rem 0.9rem;
+    text-align: center;
+}
+
+.metric-highlight .value {
+    font-size: 1.35rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #818cf8, #c084fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.metric-highlight .label {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+</style>
+"""
+
 
 def _load_uploaded_images(files):
     """Return list of (np.ndarray uint8 RGB, name) for each Streamlit UploadedFile."""
@@ -79,9 +172,36 @@ def _progress_factory(bar, text_el):
         pct = int(step / total * 100) if total > 0 else 100
         bar.progress(min(pct, 100))
         text_el.markdown(
-            f"**Processing {step}/{total}** — {msg}"
+            f"**Step {step}/{total}** — {msg}"
         )
     return _cb
+
+
+def _render_env_info():
+    """Safely render environment/version info — never crashes."""
+    import sys
+    rows = [("Python", sys.version.split()[0])]
+
+    for pkg_name, import_name in [
+        ("PyTorch", "torch"),
+        ("NumPy", "numpy"),
+        ("scikit-learn", "sklearn"),
+        ("SciPy", "scipy"),
+        ("Streamlit", "streamlit"),
+    ]:
+        try:
+            mod = __import__(import_name)
+            rows.append((pkg_name, getattr(mod, "__version__", "installed")))
+        except ImportError:
+            rows.append((pkg_name, "❌ Not installed"))
+
+    table = "| Component | Version |\n|---|---|\n"
+    for name, ver in rows:
+        table += f"| {name} | `{ver}` |\n"
+    table += f"| Random seed (patches) | `42` |\n"
+    table += f"| Payload seed | Deterministic (image_idx × 1000 + BPP × 10000) |\n"
+    table += f"| Timestamp | `{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` |\n"
+    return table
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -89,12 +209,14 @@ def _progress_factory(bar, text_el):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _tab_payload_capacity():
-    st.markdown("#### 📊 Payload Capacity Experiment")
-    st.info(
-        "Embeds payloads of increasing size into each uploaded cover image using "
-        "**CNN-DA-EMD-OLSB** and measures PSNR, SSIM, MSE, BER and recovery accuracy "
-        "at each BPP level.  All metrics are computed from actual embedding — no simulated values."
-    )
+    st.markdown("""
+    <div class="research-card">
+        <h4>📊 Payload Capacity Experiment</h4>
+        <p>Embeds payloads of increasing size into each uploaded cover image using
+        <b>CNN-DA-EMD-OLSB</b> and measures PSNR, SSIM, MSE, BER and recovery accuracy
+        at each BPP level. All metrics are computed from actual embedding — no simulated values.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -144,7 +266,7 @@ def _tab_payload_capacity():
                     st.session_state["pc_zip"]        = get_capacity_zip(results_df, stats_df, figs)
                     st.session_state["pc_out_dir"]    = out_dir
                     prog_bar.progress(100)
-                    prog_text.markdown("✅ Experiment complete!")
+                    prog_text.markdown("✅ **Experiment complete!**")
                 except Exception as exc:
                     st.error(f"Experiment failed: {exc}")
                     import traceback; st.code(traceback.format_exc())
@@ -199,13 +321,15 @@ def _tab_payload_capacity():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _tab_statistical_testing():
-    st.markdown("#### 📈 Statistical Testing — Friedman + Nemenyi + Kendall's W")
-    st.info(
-        "Compares the **6 benchmark models** using a Friedman χ² test (non-parametric, "
-        "matched across the same test images).  If the Friedman test is significant "
-        "(p < 0.05) a Nemenyi post-hoc pairwise comparison is performed.  "
-        "**Kendall's W** is reported as the effect size."
-    )
+    st.markdown("""
+    <div class="research-card">
+        <h4>📈 Statistical Testing — Friedman + Nemenyi + Kendall's W</h4>
+        <p>Compares the <b>6 benchmark models</b> using a Friedman χ² test (non-parametric,
+        matched across the same test images). If the Friedman test is significant
+        (p &lt; 0.05) a Nemenyi post-hoc pairwise comparison is performed.
+        <b>Kendall's W</b> is reported as the effect size.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -264,7 +388,7 @@ def _tab_statistical_testing():
                     st.session_state["st_zip"]     = get_statistical_zip(res, figs)
                     st.session_state["st_out_dir"] = out_dir
                     prog_bar.progress(100)
-                    prog_text.markdown("✅ Statistical testing complete!")
+                    prog_text.markdown("✅ **Statistical testing complete!**")
                 except Exception as exc:
                     st.error(f"Statistical test failed: {exc}")
                     import traceback; st.code(traceback.format_exc()); return
@@ -337,12 +461,14 @@ def _tab_statistical_testing():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _tab_security_analysis():
-    st.markdown("#### 🔒 Security Analysis")
-    st.info(
-        "Performs 6 independent security analyses comparing **cover vs stego images**: "
-        "Histogram · Entropy · Pixel Correlation · RS Analysis · SPA · Chi-Square PoV.  "
-        "Stego images can be generated automatically or uploaded manually."
-    )
+    st.markdown("""
+    <div class="research-card">
+        <h4>🔒 Security Analysis</h4>
+        <p>Performs 6 independent security analyses comparing <b>cover vs stego images</b>:
+        Histogram · Entropy · Pixel Correlation · RS Analysis · SPA · Chi-Square PoV.
+        Stego images can be generated automatically or uploaded manually.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -413,7 +539,7 @@ def _tab_security_analysis():
                 st.session_state["sec_zip"]     = get_security_zip(sec_result)
                 st.session_state["sec_out_dir"] = out_dir
                 prog_bar.progress(100)
-                prog_text.markdown("✅ Security analysis complete!")
+                prog_text.markdown("✅ **Security analysis complete!**")
             except Exception as exc:
                 st.error(f"Security analysis failed: {exc}")
                 import traceback; st.code(traceback.format_exc()); return
@@ -502,14 +628,17 @@ def _tab_security_analysis():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _tab_steganalysis():
-    st.markdown("#### 🕵️ Steganalysis — Cover vs Stego Classification")
-    st.info(
-        "Trains a **SRM-inspired CNN** (PyTorch) to classify 64×64 image patches as "
-        "cover (class 0) or stego (class 1).  "
-        "**Data leakage prevention**: each original cover image and its stego counterpart "
-        "are always placed in the **same** split (train / val / test)."
-    )
+    st.markdown("""
+    <div class="research-card">
+        <h4>🕵️ Steganalysis — Cover vs Stego Binary Classification</h4>
+        <p>Trains a <b>SRM-inspired CNN</b> (PyTorch) to classify 64×64 image patches as
+        cover (class 0) or stego (class 1).
+        <b>Data leakage prevention</b>: each original cover image and its stego counterpart
+        are always placed in the <b>same</b> split (train / val / test).</p>
+    </div>
+    """, unsafe_allow_html=True)
 
+    # ── Configuration ─────────────────────────────────────────────────────────
     col1, col2 = st.columns([1, 1])
     with col1:
         cover_files = st.file_uploader(
@@ -527,18 +656,56 @@ def _tab_steganalysis():
         st.markdown("**Split Configuration (by image):**")
         train_r = st.slider("Train ratio:", 0.5, 0.8, 0.70, 0.05, key="sa_train_r")
         val_r   = st.slider("Val ratio:",   0.0, 0.3, 0.15, 0.05, key="sa_val_r")
-        st.caption(f"Test ratio: {1.0 - train_r - val_r:.2f}")
+        test_r  = max(0.0, 1.0 - train_r - val_r)
+        st.caption(f"Test ratio: {test_r:.2f}")
 
-    gen_btn   = st.button("🔧 Generate Stego Dataset", key="sa_gen")
-    train_btn = st.button("🧠 Train & Evaluate Classifier", type="primary", key="sa_train")
+    # ── Workflow status ───────────────────────────────────────────────────────
+    dataset_ready = "sa_covers_data" in st.session_state
+    n_pairs = sum(1 for s in st.session_state.get("sa_stegos_data", []) if s is not None) if dataset_ready else 0
 
-    # ── Stego generation ─────────────────────────────────────────────────────
-    if gen_btn:
+    st.markdown("---")
+
+    # Step indicator
+    st.markdown(f"""
+    <div style="display:flex;gap:2rem;margin-bottom:1rem;flex-wrap:wrap;">
+        <div class="step-row">
+            <span class="step-badge">1</span>
+            <span class="step-text">Generate Stego Dataset</span>
+            &nbsp;
+            <span class="status-pill {'status-ready' if dataset_ready else 'status-pending'}">
+                {'✅ Ready — ' + str(n_pairs) + ' pairs' if dataset_ready else '⏳ Pending'}
+            </span>
+        </div>
+        <div class="step-row">
+            <span class="step-badge">2</span>
+            <span class="step-text">Train & Evaluate CNN</span>
+            &nbsp;
+            <span class="status-pill {'status-ready' if 'sa_result' in st.session_state else 'status-pending'}">
+                {'✅ Complete' if 'sa_result' in st.session_state else '⏳ Pending'}
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Buttons ───────────────────────────────────────────────────────────────
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+    with btn_col1:
+        auto_btn = st.button("🚀 Generate & Train (Full Pipeline)", type="primary", key="sa_auto")
+    with btn_col2:
+        gen_btn = st.button("🔧 Step 1: Generate Stego Only", key="sa_gen")
+    with btn_col3:
+        train_btn = st.button("🧠 Step 2: Train & Evaluate", key="sa_train",
+                              disabled=not dataset_ready)
+
+    # ── Stego generation (used by both auto and gen_btn) ──────────────────────
+    def _do_generate():
         if not cover_files:
-            st.error("Upload cover images first."); return
+            st.error("Upload cover images first.")
+            return False
         covers, c_names = _load_uploaded_images(cover_files)
         if not covers:
-            st.error("No valid images loaded."); return
+            st.error("No valid images loaded.")
+            return False
 
         prog_bar  = st.progress(0)
         prog_text = st.empty()
@@ -552,38 +719,24 @@ def _tab_steganalysis():
                     progress_callback=cb,
                 )
                 n_ok = sum(1 for s in stg_out if s is not None)
-                st.session_state["sa_covers"] = cov_out
-                st.session_state["sa_stegos"] = stg_out
-                st.session_state["sa_names"]  = nm_out
+                st.session_state["sa_covers_data"] = cov_out
+                st.session_state["sa_stegos_data"] = stg_out
+                st.session_state["sa_names_data"]  = nm_out
                 prog_bar.progress(100)
                 prog_text.markdown(
-                    f"✅ Generated stego for **{n_ok}/{len(covers)}** images.  "
+                    f"✅ **Generated stego for {n_ok}/{len(covers)} images.**  "
                     f"{len(covers)-n_ok} failed (payload too large for image)."
                 )
+                return n_ok >= 2
             except Exception as exc:
                 st.error(f"Stego generation failed: {exc}")
                 import traceback; st.code(traceback.format_exc())
+                return False
 
-    if "sa_covers" in st.session_state:
-        n_pairs = sum(1 for s in st.session_state["sa_stegos"] if s is not None)
-        st.success(f"✅ Stego dataset ready: **{n_pairs}** valid image pairs.")
-
-        # Preview sample
-        with st.expander("Preview stego sample"):
-            cov_list = st.session_state["sa_covers"]
-            stg_list = st.session_state["sa_stegos"]
-            nm_list  = st.session_state["sa_names"]
-            valid_pairs = [(c,s,n) for c,s,n in zip(cov_list,stg_list,nm_list) if s is not None]
-            if valid_pairs:
-                c_ex, s_ex, n_ex = valid_pairs[0]
-                pc1, pc2 = st.columns(2)
-                pc1.image(c_ex, caption=f"Cover: {n_ex}", use_container_width=True)
-                pc2.image(s_ex, caption=f"Stego S1: {n_ex}", use_container_width=True)
-
-    # ── Training ─────────────────────────────────────────────────────────────
-    if train_btn:
-        if "sa_covers" not in st.session_state:
-            st.error("Generate the stego dataset first."); return
+    def _do_train():
+        if "sa_covers_data" not in st.session_state:
+            st.error("Generate the stego dataset first (Step 1).")
+            return
 
         prog_bar  = st.progress(0)
         prog_text = st.empty()
@@ -592,9 +745,9 @@ def _tab_steganalysis():
         with st.spinner("Training steganalysis CNN … (this may take several minutes)"):
             try:
                 sa_result = run_steganalysis(
-                    cover_images=st.session_state["sa_covers"],
-                    stego_images=st.session_state["sa_stegos"],
-                    cover_names=st.session_state["sa_names"],
+                    cover_images=st.session_state["sa_covers_data"],
+                    stego_images=st.session_state["sa_stegos_data"],
+                    cover_names=st.session_state["sa_names_data"],
                     train_ratio=train_r,
                     val_ratio=val_r,
                     n_epochs=n_epochs,
@@ -602,17 +755,46 @@ def _tab_steganalysis():
                     progress_callback=cb,
                 )
                 if "error" in sa_result:
-                    st.error(sa_result["error"]); return
+                    st.error(sa_result["error"])
+                    return
 
                 out_dir = save_steganalysis_results(sa_result)
                 st.session_state["sa_result"]  = sa_result
                 st.session_state["sa_zip"]     = get_steganalysis_zip(sa_result)
                 st.session_state["sa_out_dir"] = out_dir
                 prog_bar.progress(100)
-                prog_text.markdown("✅ Steganalysis classifier trained and evaluated!")
+                prog_text.markdown("✅ **Steganalysis classifier trained and evaluated!**")
             except Exception as exc:
                 st.error(f"Training failed: {exc}")
                 import traceback; st.code(traceback.format_exc())
+
+    # ── Execute workflow ──────────────────────────────────────────────────────
+    if auto_btn:
+        ok = _do_generate()
+        if ok:
+            _do_train()
+
+    if gen_btn and not auto_btn:
+        _do_generate()
+
+    if train_btn and not auto_btn:
+        _do_train()
+
+    # ── Dataset preview ───────────────────────────────────────────────────────
+    if "sa_covers_data" in st.session_state:
+        n_pairs_now = sum(1 for s in st.session_state["sa_stegos_data"] if s is not None)
+        st.success(f"✅ Stego dataset ready: **{n_pairs_now}** valid image pairs.")
+
+        with st.expander("🔍 Preview stego sample"):
+            cov_list = st.session_state["sa_covers_data"]
+            stg_list = st.session_state["sa_stegos_data"]
+            nm_list  = st.session_state["sa_names_data"]
+            valid_pairs = [(c,s,n) for c,s,n in zip(cov_list,stg_list,nm_list) if s is not None]
+            if valid_pairs:
+                c_ex, s_ex, n_ex = valid_pairs[0]
+                pc1, pc2 = st.columns(2)
+                pc1.image(c_ex, caption=f"Cover: {n_ex}", use_container_width=True)
+                pc2.image(s_ex, caption=f"Stego S1: {n_ex}", use_container_width=True)
 
     # ── Results display ───────────────────────────────────────────────────────
     if "sa_result" in st.session_state:
@@ -654,7 +836,7 @@ def _tab_steganalysis():
             st.pyplot(res["training_history_figure"])
 
         if "training_history" in res and not res["training_history"].empty:
-            with st.expander("Training history table"):
+            with st.expander("📋 Training history table"):
                 st.dataframe(res["training_history"], use_container_width=True)
 
         # Downloads
@@ -686,17 +868,25 @@ def _tab_steganalysis():
 
 def render_research_evaluation_page():
     """Render the complete 🧪 Research & Evaluation page."""
+
+    # Inject premium CSS
+    st.markdown(_RESEARCH_CSS, unsafe_allow_html=True)
+
+    # ── Hero header ───────────────────────────────────────────────────────────
     st.markdown("""
-    <div style="background:linear-gradient(135deg,rgba(15,23,42,0.92),rgba(30,27,75,0.92));
-    border:1px solid rgba(99,102,241,0.28);border-radius:18px;padding:1.4rem 1.6rem;margin-bottom:1.2rem;">
-        <div style="color:#c084fc;font-weight:700;letter-spacing:1.5px;font-size:0.78rem;text-transform:uppercase;margin-bottom:0.4rem;">
-            🧪 Research Module
+    <div style="background:linear-gradient(135deg,rgba(15,23,42,0.94),rgba(30,27,75,0.94));
+    border:1px solid rgba(99,102,241,0.28);border-radius:20px;padding:1.6rem 2rem;margin-bottom:1.4rem;
+    box-shadow:0 16px 40px -12px rgba(0,0,0,0.45);backdrop-filter:blur(14px);">
+        <div style="display:flex;align-items:center;gap:0.8rem;margin-bottom:0.6rem;">
+            <span style="font-size:1.8rem;">🧪</span>
+            <div style="color:#c084fc;font-weight:700;letter-spacing:1.5px;font-size:0.78rem;
+            text-transform:uppercase;">Research Module</div>
         </div>
-        <div style="font-size:1.65rem;font-weight:800;background:linear-gradient(135deg,#818cf8,#c084fc,#f472b6);
+        <div style="font-size:1.75rem;font-weight:800;background:linear-gradient(135deg,#818cf8,#c084fc,#f472b6);
         -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:0.5rem;">
             Research &amp; Evaluation Suite
         </div>
-        <div style="color:#94a3b8;font-size:0.97rem;line-height:1.55;">
+        <div style="color:#94a3b8;font-size:0.97rem;line-height:1.6;">
             Four independent experiment modules for systematic evaluation of CNN-DA-EMD-OLSB.<br>
             All results come from <b>actually running the model</b> — no simulated or fabricated data.
         </div>
@@ -705,18 +895,7 @@ def render_research_evaluation_page():
 
     # ── Experiment configuration info ────────────────────────────────────────
     with st.expander("ℹ️ Experiment Configuration & Reproducibility", expanded=False):
-        import sys, torch, numpy, sklearn
-        st.markdown(f"""
-| Parameter | Value |
-|---|---|
-| Python | `{sys.version.split()[0]}` |
-| PyTorch | `{torch.__version__}` |
-| NumPy | `{numpy.__version__}` |
-| scikit-learn | `{sklearn.__version__}` |
-| Random seed (patches) | `42` |
-| Payload seed | Deterministic (image_idx × 1000 + BPP × 10000) |
-| Timestamp | `{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` |
-""")
+        st.markdown(_render_env_info())
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Payload Capacity",
