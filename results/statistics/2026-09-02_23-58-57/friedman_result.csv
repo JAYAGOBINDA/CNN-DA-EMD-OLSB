@@ -1,0 +1,2 @@
+chi2_statistic,degrees_of_freedom,p_value,alpha,significant,decision
+18.046,5,0.002889,0.05,True,SIGNIFICANT (p = 0.0029 < 0.05) — at least one model differs

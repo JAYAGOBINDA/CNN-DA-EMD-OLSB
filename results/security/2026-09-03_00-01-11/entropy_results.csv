@@ -1,0 +1,9 @@
+image,image_type,channel,entropy
+stego_chalsa (8).png,cover,R,6.120082
+stego_chalsa (8).png,cover,G,5.672517
+stego_chalsa (8).png,cover,B,5.61141
+stego_chalsa (8).png,cover,overall,5.858111
+stego_chalsa (8).png,stego,R,5.950342
+stego_chalsa (8).png,stego,G,6.001304
+stego_chalsa (8).png,stego,B,6.076893
+stego_chalsa (8).png,stego,overall,6.392037

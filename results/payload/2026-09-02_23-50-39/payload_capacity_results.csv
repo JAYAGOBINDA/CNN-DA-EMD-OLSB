@@ -1,0 +1,5 @@
+image_id,image_hw,target_bpp,target_bits,target_bytes,payload_bytes,payload_bits,actual_bpp,psnr,ssim,mse,ber,payload_recovery_%,cover_recovery_%,embed_time_s,extract_time_s,max_capacity_bits,status
+stego_s2.png,525×417,0.001,218,27,1,8,3.7e-05,77.57,1.0,0.0011,0.0,100.0,100.0,0.1449,2.7885,460477,success
+stego_s2.png,525×417,0.01,2189,273,181,1448,0.006614,73.24,1.0,0.0031,0.0,100.0,100.0,0.092,2.7756,460477,success
+stego_s2.png,525×417,0.05,10946,1368,1276,10208,0.046628,66.34,0.9998,0.0151,0.0,100.0,100.0,0.0898,2.7685,460477,success
+stego_s2.png,525×417,0.1,21892,2736,2644,21152,0.096618,62.84,0.9995,0.0338,0.0,100.0,100.0,0.0965,2.6947,460477,success

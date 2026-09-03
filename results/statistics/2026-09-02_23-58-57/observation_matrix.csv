@@ -1,0 +1,6 @@
+image,MPEH-RDH,MCSH-RDH,CNN-RDH Predictor,SRDNN-Stego,EMD-OLSB RDH,CNN-DA-EMD-OLSB
+stego_photo (2).png,88.87,88.82,89.62,50.01,90.03,90.73
+recovered_secret_image.jpeg,79.75,78.64,77.44,52.38,79.71,78.5
+stego_photo (3).png,89.19,89.0,89.56,50.01,89.96,90.12
+recovered_secret_image (1).jpeg,79.75,78.64,77.44,52.38,79.71,78.7
+img1.jpg,76.45,76.23,76.23,51.89,77.24,77.35

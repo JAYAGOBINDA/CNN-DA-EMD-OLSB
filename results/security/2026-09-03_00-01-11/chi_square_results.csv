@@ -1,0 +1,3 @@
+image,image_type,chi_sq_stat,degrees_of_freedom,p_value,alpha,suspected_stego,interpretation,method
+stego_chalsa (8).png,cover,46790.5922,127,0.0,0.05,False,Natural / clean image — PoV pairs non-uniform (p < 0.05),Chi-Square PoV (Westfeld & Pfitzmann 2000)
+stego_chalsa (8).png,stego,36893.5917,127,0.0,0.05,False,Natural / clean image — PoV pairs non-uniform (p < 0.05),Chi-Square PoV (Westfeld & Pfitzmann 2000)

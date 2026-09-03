@@ -1,0 +1,3 @@
+"""
+CNN predictor extension module.
+"""
