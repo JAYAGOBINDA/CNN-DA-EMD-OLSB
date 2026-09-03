@@ -163,6 +163,13 @@ param_gamma = st.sidebar.slider("CNN Blend Factor (γ)", 0.0, 1.0, 0.6, 0.05,
 param_t1    = st.sidebar.slider("Smooth / Moderate Threshold (T1)", 0.1, 0.5, 0.33, 0.01)
 param_t2    = st.sidebar.slider("Moderate / High Threshold (T2)", 0.51, 0.9, 0.66, 0.01)
 
+# Diagnostic verification badge for DistortionCNN weights
+cnn_adapter = runner.adapters.get('CNN-DA-EMD-OLSB')
+if cnn_adapter and getattr(cnn_adapter.model, '_cnn_trained', False):
+    st.sidebar.success("🧠 Trained DistortionCNN (`models/distortion_cnn.pth`) Active")
+else:
+    st.sidebar.warning("⚠️ Trained DistortionCNN weights not active (using fallback)")
+
 import base64
 
 def load_image(uploaded_file) -> np.ndarray:
@@ -373,6 +380,7 @@ elif page == "📥 Embed Payload (Proposed)":
         if st.button("🚀 Embed Secret Payload (CNN-DA-EMD-OLSB)", type="primary"):
             with st.spinner("Running CNN distortion maps + adaptive dual-stego embedding..."):
                 try:
+                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
                     stego_dual, stats = embed_cnn_da_emd_olsb(
                         cover_rgb=cover_rgb,
                         secret_data=secret_bytes,
@@ -382,7 +390,8 @@ elif page == "📥 Embed Payload (Proposed)":
                         gamma=param_gamma,
                         t1=param_t1,
                         t2=param_t2,
-                        payload_type=payload_type
+                        payload_type=payload_type,
+                        model=cnn_model
                     )
                     stego1_rgb, stego2_rgb = stego_dual
                     st.session_state['stego_result'] = {
@@ -493,6 +502,7 @@ elif page == "📤 Extract Payload (Proposed)":
         if st.button("🔓 Extract & Decrypt Secret Payload (CNN-DA-EMD-OLSB)", type="primary"):
             with st.spinner("Extracting bitstream and recovering cover using CNN-DA-EMD-OLSB dual-stego..."):
                 try:
+                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
                     extracted_bytes, recovered_cover, meta = extract_cnn_da_emd_olsb(
                         stego_dual=(stego1_rgb, stego2_rgb),
                         password=ext_password,
@@ -500,7 +510,8 @@ elif page == "📤 Extract Payload (Proposed)":
                         beta=param_beta,
                         gamma=param_gamma,
                         t1=param_t1,
-                        t2=param_t2
+                        t2=param_t2,
+                        model=cnn_model
                     )
                     st.session_state['extract_result'] = {
                         'extracted_bytes': extracted_bytes,

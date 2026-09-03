@@ -421,7 +421,11 @@ def extract_cnn_da_emd_olsb(
     # Recompute maps if stored thresholds differ
     if abs(t1_h - t1) > 0.001 or abs(t2_h - t2) > 0.001:
         cls_r, cls_g, cls_b = _get_cap_maps(upper_stego, alpha, beta, t1_h, t2_h, model)
-        emd_mask = ((cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1))
+        emd_mask = (
+            (cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1) &
+            (upper_stego[:, :, 0] >= 8) & (upper_stego[:, :, 0] <= 240) &
+            (upper_stego[:, :, 1] >= 8) & (upper_stego[:, :, 1] <= 240)
+        )
         olsb_mask = (cls_b == CAP_CLASS2)
 
     # 3 — Second pass: extract full payload (header + ciphertext)

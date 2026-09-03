@@ -17,7 +17,8 @@ Architecture:
 
 import numpy as np
 import cv2
-from typing import Tuple
+from pathlib import Path
+from typing import Tuple, Optional
 
 try:
     import torch
@@ -101,6 +102,52 @@ if TORCH_AVAILABLE:
             return out
 
 
+_TRAINED_CNN_SINGLETON = None
+
+
+def load_trained_distortion_cnn(device: Optional['torch.device'] = None) -> 'Optional[DistortionCNN]':
+    """
+    Loads and caches the trained DistortionCNN model from models/distortion_cnn.pth.
+    Returns None if weights file is not found or fails to load.
+    """
+    global _TRAINED_CNN_SINGLETON
+    if not TORCH_AVAILABLE:
+        return None
+    if _TRAINED_CNN_SINGLETON is not None:
+        if device is not None:
+            _TRAINED_CNN_SINGLETON.to(device)
+        return _TRAINED_CNN_SINGLETON
+
+    target_device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    current_dir = Path(__file__).resolve().parent
+    candidate_paths = [
+        current_dir.parent / "models" / "distortion_cnn.pth",
+        current_dir / "distortion_cnn.pth",
+        Path("models/distortion_cnn.pth").resolve(),
+    ]
+
+    model_path = None
+    for p in candidate_paths:
+        if p.is_file():
+            model_path = p
+            break
+
+    if model_path is not None and model_path.exists():
+        try:
+            model = DistortionCNN()
+            state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+            model.load_state_dict(state_dict)
+            model.to(target_device)
+            model.eval()
+            _TRAINED_CNN_SINGLETON = model
+            print("Loaded trained DistortionCNN from models/distortion_cnn.pth")
+            return _TRAINED_CNN_SINGLETON
+        except Exception as e:
+            print(f"Warning: Failed to load trained DistortionCNN from {model_path}: {e}")
+            return None
+    return None
+
+
 def compute_distortion_maps(
     img_rgb: np.ndarray,
     model: 'DistortionCNN' = None,
@@ -125,27 +172,30 @@ def compute_distortion_maps(
     if TORCH_AVAILABLE:
         try:
             if model is None:
-                model = DistortionCNN()
-                model.eval()
+                model = load_trained_distortion_cnn()
 
-            # Prepare input tensor: normalise to [0,1], shape (1,3,H,W)
-            img_f = img_rgb.astype(np.float32) / 255.0
-            tensor = torch.from_numpy(img_f.transpose(2, 0, 1)).unsqueeze(0)
+            if model is not None:
+                device = next(model.parameters()).device if list(model.parameters()) else torch.device("cpu")
 
-            with torch.no_grad():
-                out = model(tensor)  # (1, 3, H, W)
+                # Prepare input tensor: normalise to [0,1], shape (1,3,H,W)
+                img_f = img_rgb.astype(np.float32) / 255.0
+                tensor = torch.from_numpy(img_f.transpose(2, 0, 1)).unsqueeze(0).to(device)
 
-            out_np = out.squeeze(0).numpy()  # (3, H, W)
-            D_r = _normalize_01(out_np[0])
-            D_g = _normalize_01(out_np[1])
-            D_b = _normalize_01(out_np[2])
-            return D_r, D_g, D_b
+                with torch.no_grad():
+                    out = model(tensor)  # (1, 3, H, W)
 
-        except Exception:
-            pass  # Fall through to analytic fallback
+                out_np = out.squeeze(0).detach().cpu().numpy()  # (3, H, W)
+                D_r = _normalize_01(out_np[0])
+                D_g = _normalize_01(out_np[1])
+                D_b = _normalize_01(out_np[2])
+                return D_r, D_g, D_b
+
+        except Exception as e:
+            import warnings
+            warnings.warn(f"DistortionCNN inference encountered an error ({e}); using analytic fallback.", UserWarning)
 
     # -------------------------------------------------------------------------
-    # Analytic Fallback (no PyTorch / CUDA OOM / etc.)
+    # Analytic Fallback (no PyTorch / CUDA OOM / model file missing)
     # Combine Sobel gradient and local variance to approximate distortion map.
     # Heavily textured / high-gradient areas are more distortion-tolerant.
     # -------------------------------------------------------------------------

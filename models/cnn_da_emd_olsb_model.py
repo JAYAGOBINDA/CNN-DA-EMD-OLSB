@@ -8,6 +8,8 @@ interface compatible with the project's BaseModelAdapter pattern.
 
 import numpy as np
 from typing import Tuple, Dict, Any, Optional
+from pathlib import Path
+import torch
 
 from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb, extract_cnn_da_emd_olsb
 
@@ -32,15 +34,58 @@ class CNNDAEMDOLSBModel:
         self.t1      = t1
         self.t2      = t2
         self.use_cnn = use_cnn
+        self.device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._cnn_model = None
+        self._cnn_trained = False
 
         if use_cnn:
             try:
                 from cnn.distortion_cnn import DistortionCNN
-                self._cnn_model = DistortionCNN()
-                self._cnn_model.eval()
-            except Exception:
+
+                # Candidate paths to locate distortion_cnn.pth robustly across execution contexts
+                current_dir = Path(__file__).resolve().parent
+                candidate_paths = [
+                    current_dir / "distortion_cnn.pth",
+                    current_dir.parent / "models" / "distortion_cnn.pth",
+                    Path("models/distortion_cnn.pth").resolve(),
+                ]
+
+                model_path = None
+                for p in candidate_paths:
+                    if p.is_file():
+                        model_path = p
+                        break
+
+                if model_path is None or not model_path.exists():
+                    import warnings
+                    warnings.warn(
+                        f"Trained DistortionCNN weights not found in candidate paths: {candidate_paths}. "
+                        "Will NOT use an untrained network pretending to be trained.",
+                        UserWarning
+                    )
+                    print(f"Warning: Trained DistortionCNN weights not found. Searched: {candidate_paths}")
+                    self._cnn_model = None
+                    self._cnn_trained = False
+                else:
+                    self._cnn_model = DistortionCNN()
+                    state_dict = torch.load(
+                        model_path,
+                        map_location="cpu",
+                        weights_only=True
+                    )
+                    self._cnn_model.load_state_dict(state_dict)
+                    self._cnn_model.to(self.device)
+                    self._cnn_model.eval()
+                    self._cnn_trained = True
+
+                    print("Loaded trained DistortionCNN from models/distortion_cnn.pth")
+
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Could not load trained DistortionCNN: {e}", UserWarning)
+                print(f"Could not load trained DistortionCNN: {e}")
                 self._cnn_model = None
+                self._cnn_trained = False
 
     def embed(
         self,
@@ -71,6 +116,7 @@ class CNNDAEMDOLSBModel:
 
         stats['model_name'] = 'CNN-DA-EMD-OLSB'
         stats['cnn_enabled'] = (self._cnn_model is not None)
+        stats['cnn_trained'] = getattr(self, '_cnn_trained', False)
         return stego_dual, stats
 
     def extract(
