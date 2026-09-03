@@ -206,7 +206,8 @@ class CNNDAEMDOLSBAdapter(BaseModelAdapter):
             stego_output,
             password=password,
             t1=stats.get('t1', 0.33),
-            t2=stats.get('t2', 0.66)
+            t2=stats.get('t2', 0.66),
+            gamma=stats.get('gamma', 0.6)
         )
         return secret_bytes, recovered_cover
 

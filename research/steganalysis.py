@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Steganalysis Module — Cover vs Stego Binary Classification.
 
@@ -147,11 +148,14 @@ def generate_stego_dataset(
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[List[np.ndarray], List[Optional[np.ndarray]], List[str]]:
     """
-    Embed a payload into each cover image using CNN-DA-EMD-OLSB.
-    Returns (cover_images, stego_images, names) — stego is None for failures.
+    Embed a payload into each cover image using trained CNN-DA-EMD-OLSB.
+    Returns (cover_images, stego_images, names) - stego is None for failures.
     """
     from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb
+    from cnn.distortion_cnn import load_trained_distortion_cnn
     OVERHEAD = 96
+
+    model = load_trained_distortion_cnn() if gamma > 0.0 else None
 
     stegos: List[Optional[np.ndarray]] = []
     total  = len(cover_images)
@@ -167,12 +171,17 @@ def generate_stego_dataset(
             dual, _ = embed_cnn_da_emd_olsb(
                 cover_rgb=cov, secret_data=secret, password=password,
                 alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2, payload_type=0,
+                model=model,
             )
             stegos.append(dual[0])  # use S1
         except Exception:
             stegos.append(None)
 
     return cover_images, stegos, cover_names
+
+
+# Convenience alias for consistency
+generate_stego_for_steganalysis = generate_stego_dataset
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -192,9 +201,10 @@ def run_steganalysis(
     """
     Train and evaluate the steganalysis CNN.
 
-    Splitting is done by cover image index to prevent data leakage.
-    Patches are extracted AFTER splitting — the same image pair never
-    appears in two different splits.
+    Splitting is strictly grouped by original cover image identity to prevent
+    data leakage. If multiple stego variants exist for a cover, all of them
+    remain together in either train, val, or test.
+    Patches are extracted AFTER split assignment.
     """
     if not TORCH_AVAILABLE:
         return {"error": "PyTorch is not installed. Cannot run steganalysis."}
@@ -208,35 +218,59 @@ def run_steganalysis(
     if len(pairs) < 2:
         return {"error": f"Need ≥ 2 valid image pairs. Only {len(pairs)} available."}
 
-    n     = len(pairs)
-    idxs  = list(range(n))
-    np.random.seed(42)
-    np.random.shuffle(idxs)
+    n = len(pairs)
 
-    n_train = max(1, int(n * train_ratio))
-    n_val   = max(0, int(n * val_ratio))
-    n_test  = max(1, n - n_train - n_val)
-    # Adjust if rounding overflows
-    while n_train + n_val + n_test > n:
-        n_val = max(0, n_val - 1)
+    # Group by unique base cover identity to strictly prevent data leakage
+    cover_groups: Dict[str, List[int]] = {}
+    for i, (c, s, n_img) in enumerate(pairs):
+        base_key = n_img.split('_bpp')[0].split('_s1')[0].split('_s2')[0].split('_stego')[0].strip()
+        cover_groups.setdefault(base_key, []).append(i)
 
-    tr_idx  = idxs[:n_train]
-    va_idx  = idxs[n_train : n_train + n_val]
-    te_idx  = idxs[n_train + n_val :]
+    unique_covers = list(cover_groups.keys())
+    rng = np.random.default_rng(42)
+    rng.shuffle(unique_covers)
+
+    n_uc = len(unique_covers)
+    n_train_uc = max(1, int(round(n_uc * train_ratio)))
+    n_val_uc   = max(0, int(round(n_uc * val_ratio))) if n_uc > 2 else 0
+    n_test_uc  = max(1, n_uc - n_train_uc - n_val_uc)
+    while n_train_uc + n_val_uc + n_test_uc > n_uc:
+        if n_val_uc > 0:
+            n_val_uc -= 1
+        elif n_train_uc > 1:
+            n_train_uc -= 1
+        else:
+            break
+
+    train_covers = unique_covers[:n_train_uc]
+    val_covers   = unique_covers[n_train_uc : n_train_uc + n_val_uc]
+    test_covers  = unique_covers[n_train_uc + n_val_uc :]
+
+    tr_idx = [idx for k in train_covers for idx in cover_groups[k]]
+    va_idx = [idx for k in val_covers for idx in cover_groups[k]]
+    te_idx = [idx for k in test_covers for idx in cover_groups[k]]
 
     split_info = {
-        "total_image_pairs": n,
-        "train_pairs":       len(tr_idx),
-        "val_pairs":         len(va_idx),
-        "test_pairs":        len(te_idx),
-        "train_ratio_actual": round(len(tr_idx) / n, 3),
-        "val_ratio_actual":   round(len(va_idx) / n, 3),
-        "test_ratio_actual":  round(len(te_idx) / n, 3),
-        "split_method":      "Split by original cover image index — no data leakage",
-        "patch_size":        PATCH_SIZE,
-        "patch_stride":      PATCH_STRIDE,
-        "n_epochs":          n_epochs,
-        "batch_size":        batch_size,
+        "total_samples":       n,
+        "total_image_pairs":   n,
+        "train_samples":       len(tr_idx),
+        "train_pairs":         len(tr_idx),
+        "val_samples":         len(va_idx),
+        "val_pairs":           len(va_idx),
+        "test_samples":        len(te_idx),
+        "test_pairs":          len(te_idx),
+        "total_unique_covers": n_uc,
+        "train_unique_covers": len(train_covers),
+        "val_unique_covers":   len(val_covers),
+        "test_unique_covers":  len(test_covers),
+        "train_ratio_actual":  round(len(tr_idx) / n, 3),
+        "val_ratio_actual":    round(len(va_idx) / n, 3),
+        "test_ratio_actual":   round(len(te_idx) / n, 3),
+        "split_method":        "Grouped by original cover image — all variants of same cover isolated in same split (zero data leakage)",
+        "patch_size":          PATCH_SIZE,
+        "patch_stride":        PATCH_STRIDE,
+        "n_epochs":            n_epochs,
+        "batch_size":          batch_size,
     }
 
     def _collect(idx_list):
@@ -264,6 +298,7 @@ def run_steganalysis(
     split_info["train_patches"] = len(Xtr)
     split_info["val_patches"]   = len(Xva)
     split_info["test_patches"]  = len(Xte)
+    split_info["total_patches"] = len(Xtr) + len(Xva) + len(Xte)
 
     if len(Xtr) == 0:
         return {"error": "No training patches extracted (images too small?).",

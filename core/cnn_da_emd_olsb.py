@@ -93,20 +93,21 @@ def _normalize_01(arr: np.ndarray) -> np.ndarray:
 
 def _get_cap_maps(
     img_rgb: np.ndarray,
-    alpha: float, beta: float,
+    alpha: float, beta: float, gamma: float,
     t1: float, t2: float,
     model=None
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute per-channel distortion class maps (H×W uint8, values ∈ {0, 1, 2})
-    using CNN distortion guidance (or analytic Sobel+Var fallback).
+    using CNN distortion guidance blended with analytic Sobel+Var map:
+        final_distortion = gamma * CNN_distortion + (1 - gamma) * analytic_distortion
 
     Class 0: D < t1  (smooth — EMD)
     Class 1: t1 ≤ D < t2 (moderate — EMD)
     Class 2: D ≥ t2  (textured — OLSB)
     """
     D_r_raw, D_g_raw, D_b_raw = compute_distortion_maps(
-        img_rgb, model=model, alpha=alpha, beta=beta
+        img_rgb, model=model, alpha=alpha, beta=beta, gamma=gamma
     )
 
     def _to_class(d_raw: np.ndarray) -> np.ndarray:
@@ -119,55 +120,100 @@ def _get_cap_maps(
     return _to_class(D_r_raw), _to_class(D_g_raw), _to_class(D_b_raw)
 
 
-def _parse_header(header_bytes: bytes, h: int, w: int, c: int) -> Tuple[int, float, float]:
-    """Parse embedded header; return (cipher_len, t1, t2)."""
+def _parse_header(header_bytes: bytes, h: int, w: int, c: int) -> Tuple[int, float, float, float]:
+    """Parse embedded header; return (cipher_len, t1, t2, gamma)."""
+    try:
+        magic, _, _, _, cipher_len, _, _, t1, t2, gamma, _, _ = struct.unpack(
+            '!4sBB2sI16s12sfffI8s', header_bytes
+        )
+        if magic == HEADER_MAGIC:
+            return int(cipher_len), float(t1), float(t2), float(gamma)
+    except Exception:
+        pass
     try:
         magic, _, _, _, cipher_len, _, _, t1, t2, _, _ = struct.unpack(
             '!4sBB2sI16s12sffI12s', header_bytes
         )
         if magic == HEADER_MAGIC:
-            return int(cipher_len), float(t1), float(t2)
+            return int(cipher_len), float(t1), float(t2), 0.6
     except Exception:
         pass
-    return max(64, (h * w * c) // 32), 0.33, 0.66
+    return max(64, (h * w * c) // 32), 0.33, 0.66, 0.6
 
 
 # ===========================================================================
 # CAPACITY COMPUTATION
 # ===========================================================================
 
-def _compute_emd_olsb_capacity(
-    cls_r: np.ndarray,  # (H, W) uint8 class map for Red
-    cls_g: np.ndarray,  # (H, W) uint8 class map for Green
-    cls_b: np.ndarray,  # (H, W) uint8 class map for Blue
-) -> Tuple[int, int]:
+def compute_capacity(
+    cls_r: np.ndarray,
+    cls_g: np.ndarray,
+    cls_b: np.ndarray,
+    upper_rgb: np.ndarray
+) -> Dict[str, Any]:
     """
-    Compute total embeddable capacity.
+    Compute Usable Capacity vs Theoretical Upper Bound.
 
-    EMD pairs (R-G): A pixel position is EMD-routed if BOTH R and G channels
-    are class 0 or class 1 at that position. Each such pixel pair carries
-    one base-5 digit (≈2.32 bits, but exactly 2 bits in our encoding).
+    - Usable Capacity: accounts for exact EMD routing (R-G pairs where both are
+      class 0/1) AND pixel boundary safety constraints (8 <= upper <= 240) preventing
+      overflow/underflow clipping during embedding/recovery, plus Blue channel Class 2
+      carrying 3 bits OLSB.
+    - Theoretical Capacity: theoretical upper bound without boundary clipping constraints.
 
-    OLSB pixels (B): Blue channel at class 2 positions carries k bits via LSB.
-    For simplicity, class 2 on Blue = 3 bits OLSB.
-
-    Returns (total_digits_capacity, total_olsb_bits_capacity).
+    Returns dict containing exact counts, masks, and capacity metrics in bits and bytes.
     """
-    h, w = cls_r.shape
+    # EMD routing: pixel positions where BOTH R and G are class 0/1 with boundary safety
+    emd_mask = (
+        (cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1) &
+        (upper_rgb[:, :, 0] >= 8) & (upper_rgb[:, :, 0] <= 240) &
+        (upper_rgb[:, :, 1] >= 8) & (upper_rgb[:, :, 1] <= 240)
+    )  # (H, W) bool
+    usable_emd_pairs = int(np.sum(emd_mask))
+    usable_emd_bits = usable_emd_pairs * 2  # each base-5 digit carries 2 bits
 
-    # EMD routing: pixel positions where BOTH R and G are class 0 or 1
-    emd_mask = ((cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1))  # (H, W) bool
-    emd_pixel_count = int(np.sum(emd_mask))
-    # Each EMD pixel position contributes one R-G pair → one base-5 digit
-    total_emd_digits = emd_pixel_count
-
-    # OLSB routing: Blue channel where class == 2
+    # OLSB routing: Blue channel where class == 2 (carries 3 bits OLSB)
     olsb_mask = (cls_b == CAP_CLASS2)  # (H, W) bool
-    olsb_pixel_count = int(np.sum(olsb_mask))
-    # Class 2 carries 3 bits OLSB per pixel on Blue channel
-    total_olsb_bits = olsb_pixel_count * 3
+    usable_olsb_pixels = int(np.sum(olsb_mask))
+    usable_olsb_bits = usable_olsb_pixels * 3
 
-    return total_emd_digits, total_olsb_bits
+    usable_capacity_bits = usable_emd_bits + usable_olsb_bits
+
+    # Theoretical capacity without boundary clipping
+    theo_emd_mask = ((cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1))
+    theo_emd_pairs = int(np.sum(theo_emd_mask))
+    theoretical_capacity_bits = (theo_emd_pairs * 2) + usable_olsb_bits
+
+    return {
+        'usable_capacity_bits': usable_capacity_bits,
+        'usable_capacity_bytes': usable_capacity_bits // 8,
+        'usable_emd_pairs': usable_emd_pairs,
+        'usable_emd_bits': usable_emd_bits,
+        'emd_capacity_bits': usable_emd_bits,
+        'usable_olsb_pixels': usable_olsb_pixels,
+        'usable_olsb_bits': usable_olsb_bits,
+        'olsb_capacity_bits': usable_olsb_bits,
+        'theoretical_capacity_bits': theoretical_capacity_bits,
+        'theoretical_capacity_bytes': theoretical_capacity_bits // 8,
+        'theoretical_emd_bits': theo_emd_pairs * 2,
+        'emd_mask': emd_mask,
+        'olsb_mask': olsb_mask,
+    }
+
+
+def _compute_emd_olsb_capacity(
+    cls_r: np.ndarray,
+    cls_g: np.ndarray,
+    cls_b: np.ndarray,
+    upper_rgb: Optional[np.ndarray] = None
+) -> Tuple[int, int]:
+    """Legacy helper returning (total_digits_capacity, total_olsb_bits_capacity)."""
+    if upper_rgb is not None:
+        cap = compute_capacity(cls_r, cls_g, cls_b, upper_rgb)
+        return cap['usable_emd_pairs'], cap['usable_olsb_bits']
+    # Fallback if upper_rgb not provided
+    emd_mask = ((cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1))
+    olsb_mask = (cls_b == CAP_CLASS2)
+    return int(np.sum(emd_mask)), int(np.sum(olsb_mask)) * 3
 
 
 # ===========================================================================
@@ -195,36 +241,31 @@ def embed_cnn_da_emd_olsb(
     """
     h, w, c = cover_rgb.shape
 
-    # 1 — Prepare AES-256-GCM payload with header
-    payload_bytes = prepare_payload(secret_data, password, t1, t2, payload_type)
+    # 1 — Prepare AES-256-GCM payload with header (including gamma)
+    payload_bytes = prepare_payload(secret_data, password, t1, t2, payload_type, gamma=gamma)
 
     # 2 — Compute CNN distortion maps from upper 5 bitplanes (& 0xF8)
     upper = (cover_rgb & 0xF8).astype(np.uint8)
-    cls_r, cls_g, cls_b = _get_cap_maps(upper, alpha, beta, t1, t2, model)
+    cls_r, cls_g, cls_b = _get_cap_maps(upper, alpha, beta, gamma, t1, t2, model)
 
-    # 3 — Build routing masks with boundary safety (avoid 0 and 255 clipping)
-    emd_mask = (
-        (cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1) &
-        (upper[:, :, 0] >= 8) & (upper[:, :, 0] <= 240) &
-        (upper[:, :, 1] >= 8) & (upper[:, :, 1] <= 240)
-    )  # (H, W) bool
-    olsb_mask = (cls_b == CAP_CLASS2)  # (H, W) bool
-
-    # 4 — Compute capacity
-    emd_digit_cap, olsb_bit_cap = _compute_emd_olsb_capacity(cls_r, cls_g, cls_b)
-    # EMD: 1 digit = 2 bits of payload, OLSB: direct bits
-    total_emd_bits_cap = emd_digit_cap * 2
-    total_capacity_bits = total_emd_bits_cap + olsb_bit_cap
+    # 3 & 4 — Compute usable and theoretical capacity using actual masks
+    cap_info = compute_capacity(cls_r, cls_g, cls_b, upper)
+    emd_mask = cap_info['emd_mask']
+    olsb_mask = cap_info['olsb_mask']
+    usable_capacity_bits = cap_info['usable_capacity_bits']
+    theoretical_capacity_bits = cap_info['theoretical_capacity_bits']
+    total_emd_bits_cap = cap_info['usable_emd_bits']
 
     # Convert payload to base-5 digits (for EMD portion) and bits (for OLSB portion)
     payload_bits = bytes_to_bits(payload_bytes)
     total_bits = len(payload_bits)
 
-    if total_bits > total_capacity_bits:
+    if total_bits > usable_capacity_bits:
         raise ValueError(
-            f"CNN-DA-EMD-OLSB: Payload ({total_bits} bits) exceeds image "
-            f"capacity ({total_capacity_bits} bits = {emd_digit_cap} EMD digits × 2 + "
-            f"{olsb_bit_cap} OLSB bits). Use a smaller payload or larger image."
+            f"CNN-DA-EMD-OLSB: Payload ({total_bits} bits) exceeds usable image "
+            f"capacity ({usable_capacity_bits} bits = {cap_info['usable_emd_pairs']} EMD pairs × 2 + "
+            f"{cap_info['usable_olsb_bits']} OLSB bits; theoretical upper bound: {theoretical_capacity_bits} bits). "
+            "Use a smaller payload or larger image."
         )
 
     # Split payload: first portion goes to EMD (as digits), remainder to OLSB (as bits)
@@ -334,22 +375,33 @@ def embed_cnn_da_emd_olsb(
     stego2_rgb = s2.clip(0, 255).astype(np.uint8)
 
     # Report total_bits_embedded as the raw secret payload size (len(secret_data) * 8)
-    # to match the convention used by all other benchmark models (MPEH-RDH, MCSH-RDH,
-    # CNN-RDH, SRDNN-Stego, EMD-OLSB). The internal prepared payload (header + AES
-    # ciphertext) is larger due to the 64-byte header and encryption overhead, but BPP
-    # must be computed on the same basis for fair cross-model comparison.
+    # to match the convention used by all other benchmark models.
     raw_secret_bits = len(secret_data) * 8
+    raw_bpp = round(raw_secret_bits / (h * w), 6)
+    embedded_bpp = round(total_bits / (h * w), 6)
+    cap_util = round((total_bits / usable_capacity_bits * 100.0), 2) if usable_capacity_bits > 0 else 0.0
 
     stats = {
         'algorithm':                'CNN-DA-EMD-OLSB',
         'total_bits_embedded':      raw_secret_bits,
+        'raw_payload_bits':         raw_secret_bits,
+        'raw_payload_bytes':        len(secret_data),
+        'raw_bpp':                  raw_bpp,
+        'embedded_bitstream_bits':  total_bits,
+        'embedded_bitstream_bytes': len(payload_bytes),
+        'embedded_bpp':             embedded_bpp,
         'total_emd_digits_embedded': total_emd_digits_used,
         'total_emd_bits_embedded':  emd_bits_needed,
         'total_olsb_bits_embedded': int(olsb_bit_idx),
         'payload_bytes':            len(payload_bytes),
         'internal_bits_embedded':   total_bits,
-        'max_capacity_bits':        total_capacity_bits,
-        'bpp':                      round(raw_secret_bits / (h * w * c), 4),
+        'usable_capacity_bits':     usable_capacity_bits,
+        'usable_capacity_bytes':    usable_capacity_bits // 8,
+        'theoretical_capacity_bits': theoretical_capacity_bits,
+        'theoretical_capacity_bytes': theoretical_capacity_bits // 8,
+        'max_capacity_bits':        usable_capacity_bits,
+        'capacity_utilization_%':   cap_util,
+        'bpp':                      raw_bpp,
         'dual_images':              True,
         'total_digits_embedded':    total_emd_digits_used,
         't1': t1, 't2': t2,
@@ -399,34 +451,43 @@ def extract_cnn_da_emd_olsb(
     # 1 — Recompute capacity class maps from stego upper bitplanes (& 0xF8)
     #     Upper bitplanes are identical in S1 and S2 since only low bits differ.
     upper_stego = (stego1_rgb & 0xF8).astype(np.uint8)
-    cls_r, cls_g, cls_b = _get_cap_maps(upper_stego, alpha, beta, t1, t2, model)
+    cls_r, cls_g, cls_b = _get_cap_maps(upper_stego, alpha, beta, gamma, t1, t2, model)
+    cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_stego)
+    emd_mask = cap_info['emd_mask']
+    olsb_mask = cap_info['olsb_mask']
 
-    # Build routing masks (same as embedding)
-    emd_mask = (
-        (cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1) &
-        (upper_stego[:, :, 0] >= 8) & (upper_stego[:, :, 0] <= 240) &
-        (upper_stego[:, :, 1] >= 8) & (upper_stego[:, :, 1] <= 240)
-    )
-    olsb_mask = (cls_b == CAP_CLASS2)
-
-    # 2 — First pass: extract header bits to determine payload size
-    #     Header is in the first portion of the EMD+OLSB bitstream
+    # 2 — First pass: extract header bits to determine payload size & parameters
     header_bits_needed = HEADER_SIZE_BYTES * 8
-
-    # Extract enough bits for the header using combined EMD+OLSB extraction
     header_bits = _extract_bits(stego1_rgb, emd_mask, olsb_mask, header_bits_needed)
     hdr_bytes = bits_to_bytes(np.array(header_bits[:header_bits_needed], dtype=np.uint8))
-    cipher_len, t1_h, t2_h = _parse_header(hdr_bytes, h, w, c)
 
-    # Recompute maps if stored thresholds differ
-    if abs(t1_h - t1) > 0.001 or abs(t2_h - t2) > 0.001:
-        cls_r, cls_g, cls_b = _get_cap_maps(upper_stego, alpha, beta, t1_h, t2_h, model)
-        emd_mask = (
-            (cls_r <= CAP_CLASS1) & (cls_g <= CAP_CLASS1) &
-            (upper_stego[:, :, 0] >= 8) & (upper_stego[:, :, 0] <= 240) &
-            (upper_stego[:, :, 1] >= 8) & (upper_stego[:, :, 1] <= 240)
-        )
-        olsb_mask = (cls_b == CAP_CLASS2)
+    if hdr_bytes[:4] != HEADER_MAGIC:
+        # Search candidate gammas if header wasn't found with default/passed gamma
+        for g_cand in [0.6, 0.5, 0.0, 1.0, 0.7, 0.8, 0.75, 0.65, 0.55, 0.45, 0.35, 0.85, 0.25, 0.15, 0.05, 0.95, 0.1, 0.2, 0.3, 0.4, 0.9]:
+            if abs(g_cand - gamma) < 0.001:
+                continue
+            cls_r_c, cls_g_c, cls_b_c = _get_cap_maps(upper_stego, alpha, beta, g_cand, t1, t2, model)
+            cap_info_c = compute_capacity(cls_r_c, cls_g_c, cls_b_c, upper_stego)
+            hb_c = _extract_bits(stego1_rgb, cap_info_c['emd_mask'], cap_info_c['olsb_mask'], header_bits_needed)
+            hdr_c = bits_to_bytes(np.array(hb_c[:header_bits_needed], dtype=np.uint8))
+            if hdr_c[:4] == HEADER_MAGIC:
+                gamma = g_cand
+                hdr_bytes = hdr_c
+                cls_r, cls_g, cls_b = cls_r_c, cls_g_c, cls_b_c
+                cap_info = cap_info_c
+                emd_mask = cap_info['emd_mask']
+                olsb_mask = cap_info['olsb_mask']
+                break
+
+    cipher_len, t1_h, t2_h, gamma_h = _parse_header(hdr_bytes, h, w, c)
+
+    # Recompute maps if stored parameters differ from passed parameters
+    if abs(t1_h - t1) > 0.001 or abs(t2_h - t2) > 0.001 or abs(gamma_h - gamma) > 0.001:
+        t1, t2, gamma = t1_h, t2_h, gamma_h
+        cls_r, cls_g, cls_b = _get_cap_maps(upper_stego, alpha, beta, gamma, t1, t2, model)
+        cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_stego)
+        emd_mask = cap_info['emd_mask']
+        olsb_mask = cap_info['olsb_mask']
 
     # 3 — Second pass: extract full payload (header + ciphertext)
     total_bits_needed = (HEADER_SIZE_BYTES + cipher_len) * 8
@@ -440,6 +501,7 @@ def extract_cnn_da_emd_olsb(
     metadata['algorithm'] = 'CNN-DA-EMD-OLSB'
     metadata['alpha'] = alpha
     metadata['beta'] = beta
+    metadata['gamma'] = gamma
     metadata['dual_images'] = True
     return secret_data, recovered_cover, metadata
 

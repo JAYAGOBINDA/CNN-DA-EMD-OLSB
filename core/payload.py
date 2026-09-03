@@ -13,7 +13,14 @@ HEADER_MAGIC = b'CHAL'
 HEADER_SIZE_BYTES = 64
 
 
-def prepare_payload(data: bytes, password: str, t1: float = 0.33, t2: float = 0.66, payload_type: int = 0) -> bytes:
+def prepare_payload(
+    data: bytes,
+    password: str,
+    t1: float = 0.33,
+    t2: float = 0.66,
+    payload_type: int = 0,
+    gamma: float = 0.6
+) -> bytes:
     """
     Compresses data (zlib), encrypts with AES-256-GCM, and prepends 64-byte deterministic header.
     """
@@ -33,9 +40,9 @@ def prepare_payload(data: bytes, password: str, t1: float = 0.33, t2: float = 0.
     # Step 4: Construct 64-Byte Header
     # Format:
     # Magic (4s), is_compressed (B), payload_type (B), reserved (2s), payload_len (I),
-    # salt (16s), nonce (12s), t1 (f), t2 (f), crc (I), padding (12s)
+    # salt (16s), nonce (12s), t1 (f), t2 (f), gamma (f), crc (I), padding (8s)
     header = struct.pack(
-        '!4sBB2sI16s12sffI12s',
+        '!4sBB2sI16s12sfffI8s',
         HEADER_MAGIC,
         is_compressed,
         payload_type,
@@ -45,8 +52,9 @@ def prepare_payload(data: bytes, password: str, t1: float = 0.33, t2: float = 0.
         nonce,
         float(t1),
         float(t2),
+        float(gamma),
         crc,
-        b'\x00' * 12
+        b'\x00' * 8
     )
 
     assert len(header) == HEADER_SIZE_BYTES, f"Header size mismatch: {len(header)} vs {HEADER_SIZE_BYTES}"
@@ -65,9 +73,15 @@ def parse_payload(full_payload: bytes, password: str) -> Tuple[bytes, Dict[str, 
     header_bytes = full_payload[:HEADER_SIZE_BYTES]
     ciphertext = full_payload[HEADER_SIZE_BYTES:]
 
-    magic, is_compressed, payload_type, _, cipher_len, salt, nonce, t1, t2, crc, _ = struct.unpack(
-        '!4sBB2sI16s12sffI12s', header_bytes
-    )
+    gamma_val = 0.6
+    try:
+        magic, is_compressed, payload_type, _, cipher_len, salt, nonce, t1, t2, gamma_val, crc, _ = struct.unpack(
+            '!4sBB2sI16s12sfffI8s', header_bytes
+        )
+    except Exception:
+        magic, is_compressed, payload_type, _, cipher_len, salt, nonce, t1, t2, crc, _ = struct.unpack(
+            '!4sBB2sI16s12sffI12s', header_bytes
+        )
 
     if magic != HEADER_MAGIC:
         raise ValueError(f"Invalid magic header signature: {magic}. Expected {HEADER_MAGIC}.")
@@ -92,6 +106,7 @@ def parse_payload(full_payload: bytes, password: str) -> Tuple[bytes, Dict[str, 
         'is_compressed': bool(is_compressed),
         't1': t1,
         't2': t2,
+        'gamma': gamma_val,
         'crc_match': crc_match,
         'data_size': len(data)
     }

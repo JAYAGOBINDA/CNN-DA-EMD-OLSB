@@ -89,34 +89,26 @@ def compute_shannon_entropy(img: np.ndarray) -> Dict[str, float]:
 # C.  PIXEL CORRELATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def compute_pixel_correlation(img: np.ndarray, n_samples: int = 6000) -> Dict[str, float]:
+def compute_pixel_correlation(img: np.ndarray) -> Dict[str, float]:
     """
-    Estimate horizontal, vertical, and diagonal pixel-pair correlation on
-    the luminance (grayscale mean) channel using random sampling.
+    Compute exact horizontal, vertical, and diagonal adjacent pixel-pair
+    correlation on the luminance (grayscale mean) channel.
     """
-    gray = np.mean(img, axis=2).astype(np.float32)
+    gray = np.mean(img, axis=2).astype(np.float64)
     h, w = gray.shape
-    rng  = np.random.default_rng(42)
 
-    def _corr(a, b):
-        if np.std(a) < 1e-8 or np.std(b) < 1e-8:
+    def _corr(a: np.ndarray, b: np.ndarray) -> float:
+        a_flat = a.ravel()
+        b_flat = b.ravel()
+        std_a = np.std(a_flat)
+        std_b = np.std(b_flat)
+        if std_a < 1e-8 or std_b < 1e-8:
             return float("nan")
-        return float(np.corrcoef(a, b)[0, 1])
+        return float(np.corrcoef(a_flat, b_flat)[0, 1])
 
-    # Horizontal
-    ys = rng.integers(0, h, n_samples)
-    xs = rng.integers(0, w - 1, n_samples)
-    corr_h = _corr(gray[ys, xs], gray[ys, xs + 1])
-
-    # Vertical
-    ys = rng.integers(0, h - 1, n_samples)
-    xs = rng.integers(0, w, n_samples)
-    corr_v = _corr(gray[ys, xs], gray[ys + 1, xs])
-
-    # Diagonal
-    ys = rng.integers(0, h - 1, n_samples)
-    xs = rng.integers(0, w - 1, n_samples)
-    corr_d = _corr(gray[ys, xs], gray[ys + 1, xs + 1])
+    corr_h = _corr(gray[:, :-1], gray[:, 1:])
+    corr_v = _corr(gray[:-1, :], gray[1:, :])
+    corr_d = _corr(gray[:-1, :-1], gray[1:, 1:])
 
     return {
         "corr_horizontal": round(corr_h, 6) if not np.isnan(corr_h) else float("nan"),
@@ -422,14 +414,19 @@ def generate_stego_for_security(
     t1: float = 0.33,
     t2: float = 0.66,
     payload_bpp: float = 0.05,
+    model=None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], List[str]]:
     """
     Embed a payload into each cover image and return (covers, stegos, names)
-    for the images where embedding succeeded.
+    for the images where embedding succeeded using trained CNN-DA-EMD-OLSB.
     """
     from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb
+    from cnn.distortion_cnn import load_trained_distortion_cnn
     OVERHEAD = 96
+
+    if model is None and gamma > 0.0:
+        model = load_trained_distortion_cnn()
 
     ok_covers, ok_stegos, ok_names = [], [], []
     total = len(cover_images)
@@ -445,6 +442,7 @@ def generate_stego_for_security(
             stego_dual, _ = embed_cnn_da_emd_olsb(
                 cover_rgb=cov, secret_data=secret, password=password,
                 alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2, payload_type=0,
+                model=model,
             )
             ok_covers.append(cov)
             ok_stegos.append(stego_dual[0])  # S1

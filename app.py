@@ -166,9 +166,9 @@ param_t2    = st.sidebar.slider("Moderate / High Threshold (T2)", 0.51, 0.9, 0.6
 # Diagnostic verification badge for DistortionCNN weights
 cnn_adapter = runner.adapters.get('CNN-DA-EMD-OLSB')
 if cnn_adapter and getattr(cnn_adapter.model, '_cnn_trained', False):
-    st.sidebar.success("🧠 Trained DistortionCNN (`models/distortion_cnn.pth`) Active")
+    st.sidebar.success("🧠 Loaded trained DistortionCNN from `models/distortion_cnn.pth`")
 else:
-    st.sidebar.warning("⚠️ Trained DistortionCNN weights not active (using fallback)")
+    st.sidebar.error("❌ Trained DistortionCNN (`models/distortion_cnn.pth`) Not Active")
 
 import base64
 
@@ -251,21 +251,22 @@ if page == "🏠 Home / Architecture":
     with arch_col2:
         st.markdown("""
         <div class="feature-card">
-            <h4>📊 Performance Targets vs Baseline EMD-OLSB</h4>
+            <h4>📊 Literature Baseline vs Proposed Design Targets</h4>
             <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
                 <tr style="border-bottom:1px solid #6366f1">
                     <th align="left">Metric</th>
-                    <th>EMD-OLSB (Baseline)</th>
-                    <th>CNN-DA-EMD-OLSB</th>
+                    <th>EMD-OLSB (Literature Baseline)</th>
+                    <th>CNN-DA-EMD-OLSB (Design Target)</th>
                 </tr>
-                <tr><td>PSNR</td><td>~38-42 dB</td><td style="color:#4ade80">~42-48 dB</td></tr>
-                <tr><td>SSIM</td><td>~0.95</td><td style="color:#4ade80">&gt;0.97</td></tr>
-                <tr><td>BPP (capacity)</td><td>~0.5</td><td style="color:#4ade80">1.2 – 2.5</td></tr>
-                <tr><td>BER</td><td>0.0</td><td style="color:#4ade80">0.0</td></tr>
+                <tr><td>PSNR</td><td>~38-42 dB (Target)</td><td style="color:#4ade80">~42-48 dB (Target)</td></tr>
+                <tr><td>SSIM</td><td>~0.95 (Target)</td><td style="color:#4ade80">&gt;0.97 (Target)</td></tr>
+                <tr><td>BPP (capacity)</td><td>~0.5 (Target)</td><td style="color:#4ade80">1.2 – 2.5 (Target)</td></tr>
+                <tr><td>BER</td><td>0.0 (Target)</td><td style="color:#4ade80">0.0 (Target)</td></tr>
                 <tr><td>Reversibility</td><td>Dual avg</td><td style="color:#4ade80">Dual avg + AES auth</td></tr>
                 <tr><td>CNN guidance</td><td>❌ None</td><td style="color:#4ade80">✅ DistortionCNN</td></tr>
                 <tr><td>RGB-adaptive</td><td>❌ Flat</td><td style="color:#4ade80">✅ Per-channel D map</td></tr>
                 <tr><td>Encryption</td><td>❌ None</td><td style="color:#4ade80">✅ AES-256-GCM</td></tr>
+                <tr><td colspan="3" style="font-size:0.75rem;color:#94a3b8;padding-top:8px"><em>Note: Values above represent published literature baseline metrics and design targets (illustrative). All experimental results displayed in other modules are computed dynamically on the actual test images.</em></td></tr>
             </table>
         </div>
         """, unsafe_allow_html=True)
@@ -324,10 +325,16 @@ elif page == "📥 Embed Payload (Proposed)":
         if uploaded_cover:
             cover_rgb = load_image(uploaded_cover)
             h, w, c = cover_rgb.shape
-            # CNN-DA-EMD-OLSB capacity: R-G EMD pairs carry ~2 bits/pixel + Blue OLSB (~0.2 bits/pixel)
-            max_capacity_bytes = max(100, int((h * w * 2.2) / 8) - 128)
+            from core.cnn_da_emd_olsb import _get_cap_maps, compute_capacity
+            upper_c = (cover_rgb & 0xF8).astype(np.uint8)
+            cnn_m = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
+            cls_r, cls_g, cls_b = _get_cap_maps(upper_c, param_alpha, param_beta, param_gamma, param_t1, param_t2, model=cnn_m)
+            cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_c)
+            usable_cap_bytes = cap_info['usable_capacity_bytes']
+            theo_cap_bytes = cap_info['theoretical_capacity_bytes']
+            max_capacity_bytes = max(64, usable_cap_bytes - 128)
             st.image(cover_rgb, caption=f"Cover Image ({w}x{h})", use_container_width=True)
-            st.caption(f"Estimated Max Capacity: ~{max_capacity_bytes:,} bytes")
+            st.caption(f"Usable Capacity: **{usable_cap_bytes:,} bytes** ({cap_info['usable_capacity_bits']:,} bits) | Theoretical: {theo_cap_bytes:,} bytes")
 
     with col2:
         payload_option = st.radio(
@@ -424,14 +431,15 @@ elif page == "📥 Embed Payload (Proposed)":
         max_cap   = stats['max_capacity_bits']
 
         # ---- Metrics row ----
-        st.markdown("#### 📊 Embedding Quality Metrics")
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        st.markdown("#### 📊 Embedding Quality Metrics (Computed on Real Images)")
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
         m1.metric("PSNR (S1)", f"{psnr1} dB")
         m2.metric("PSNR (S2)", f"{psnr2} dB")
         m3.metric("SSIM (S1)", f"{ssim1}")
         m4.metric("SSIM (S2)", f"{ssim2}")
-        m5.metric("BPP", f"{bpp_val}")
-        m6.metric("Max Cap", f"{max_cap:,} bits")
+        m5.metric("Raw BPP", f"{stats['raw_bpp']}")
+        m6.metric("Embedded BPP", f"{stats['embedded_bpp']}")
+        m7.metric("Usable Cap", f"{stats['usable_capacity_bits']:,} b")
 
         # ---- Image comparison ----
         st.markdown("#### 🖼️ Dual Stego Images — Preview & Download")
@@ -470,10 +478,14 @@ elif page == "📥 Embed Payload (Proposed)":
                 key="download_stego_s2_png"
             )
 
-        st.info(f"Embedded {stats['total_bits_embedded']:,} bits | "
-                f"EMD digits: {stats.get('total_emd_digits_embedded', 0)} | "
-                f"OLSB bits: {stats.get('total_olsb_bits_embedded', 0)} | "
-                f"BPP: {bpp_val} | Max Capacity: {max_cap:,} bits")
+        st.info(
+            f"Raw Secret: {stats['raw_payload_bits']:,} bits ({stats['raw_payload_bytes']:,} bytes) | "
+            f"Embedded Bitstream: {stats['embedded_bitstream_bits']:,} bits ({stats['embedded_bitstream_bytes']:,} bytes) | "
+            f"Raw Payload BPP: {stats['raw_bpp']} | Embedded Bitstream BPP: {stats['embedded_bpp']} | "
+            f"Usable Capacity: {stats['usable_capacity_bits']:,} bits ({stats['usable_capacity_bytes']:,} bytes) | "
+            f"Theoretical Capacity: {stats['theoretical_capacity_bits']:,} bits | "
+            f"Capacity Utilization: {stats['capacity_utilization_%']}%"
+        )
 
 
 # PAGE 3: EXTRACT PAYLOAD (PROPOSED)

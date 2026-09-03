@@ -116,8 +116,11 @@ def run_statistical_experiment(
             "Upload more images."
         )
         return result
-    if k < 2:
-        result["warning"] = "Select at least 2 models."
+    if k < 3:
+        result["warning"] = (
+            f"The Friedman test requires at least 3 models to compare (got {k}). "
+            "Please select at least 3 models."
+        )
         return result
 
     # ── Friedman Test ─────────────────────────────────────────────────────────
@@ -192,7 +195,7 @@ def _nemenyi_posthoc(
                 "Model B":              m2,
                 "|Avg Rank Diff|":      round(diff, 4),
                 f"Critical Diff (CD)":  round(float(CD), 4),
-                "Significant?":         "✅ Yes" if sig else "❌ No",
+                "Significant?":         "Yes" if sig else "No",
             })
     return pd.DataFrame(rows)
 

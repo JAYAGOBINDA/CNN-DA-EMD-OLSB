@@ -26,6 +26,10 @@ from typing import List, Tuple, Dict, Any, Callable, Optional
 
 from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb, extract_cnn_da_emd_olsb
 from benchmark.metrics import calculate_psnr, calculate_ssim, compute_mse
+from cnn.distortion_cnn import load_trained_distortion_cnn
+
+# Standard target BPP levels required for comprehensive capacity analysis
+DEFAULT_BPP_LEVELS: List[float] = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1]
 
 # Header + AES overhead so we don't fabricate BPP; subtract from target
 _HEADER_OVERHEAD_BYTES = 64 + 28  # 64-byte header + ~28 bytes AES overhead (nonce+tag)
@@ -40,23 +44,25 @@ def _make_payload(n_bytes: int, seed: int = 42) -> bytes:
 def run_payload_capacity_experiment(
     images: List[np.ndarray],
     image_names: List[str],
-    bpp_levels: List[float],
+    bpp_levels: Optional[List[float]] = None,
     password: str = "Pass123!",
     alpha: float = 0.5,
     beta: float = 0.5,
     gamma: float = 0.6,
     t1: float = 0.33,
     t2: float = 0.66,
+    model=None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[plt.Figure]]:
     """
-    Run payload capacity sweep.
+    Run payload capacity sweep using trained CNN-DA-EMD-OLSB.
 
     Parameters
     ----------
     images       : List of RGB uint8 numpy arrays (cover images).
     image_names  : Corresponding display names.
-    bpp_levels   : Target BPP values to test (bits per pixel, standard H×W definition).
+    bpp_levels   : Target BPP values to test (defaults to [0.001, 0.005, 0.01, 0.02, 0.05, 0.1]).
+    model        : Optional trained DistortionCNN instance.
     progress_callback : Called as (step, total, status_string).
 
     Returns
@@ -65,6 +71,12 @@ def run_payload_capacity_experiment(
     stats_df   : Summary statistics (mean, std, min, max) per BPP level.
     figures    : [fig_psnr, fig_ssim, fig_mse, fig_ber] matplotlib Figures.
     """
+    if bpp_levels is None or len(bpp_levels) == 0:
+        bpp_levels = list(DEFAULT_BPP_LEVELS)
+
+    if model is None and gamma > 0.0:
+        model = load_trained_distortion_cnn()
+
     rows = []
     total = len(images) * len(bpp_levels)
     step = 0
@@ -86,13 +98,16 @@ def run_payload_capacity_experiment(
             raw_bytes = max(1, target_bytes - _HEADER_OVERHEAD_BYTES)
 
             row: Dict[str, Any] = {
-                "image_id":     name,
-                "image_hw":     f"{h}×{w}",
-                "target_bpp":   bpp_target,
-                "target_bits":  target_bits,
-                "target_bytes": target_bytes,
-                "payload_bytes": raw_bytes,
-                "payload_bits":  raw_bytes * 8,
+                "image_id":                 name,
+                "image_hw":                 f"{h}×{w}",
+                "requested_bpp":            bpp_target,
+                "target_bpp":               bpp_target,  # compatibility alias
+                "target_bits":              target_bits,
+                "target_bytes":             target_bytes,
+                "payload_size_bytes":       raw_bytes,
+                "payload_size_bits":        raw_bytes * 8,
+                "payload_bytes":            raw_bytes,   # compatibility alias
+                "payload_bits":             raw_bytes * 8,
             }
 
             try:
@@ -106,6 +121,7 @@ def run_payload_capacity_experiment(
                     alpha=alpha, beta=beta, gamma=gamma,
                     t1=t1, t2=t2,
                     payload_type=0,
+                    model=model,
                 )
                 embed_time = time.time() - t0
                 s1, s2 = stego_dual
@@ -114,8 +130,11 @@ def run_payload_capacity_experiment(
                 ssim_val = calculate_ssim(cover, s1)
                 mse_val  = compute_mse(cover, s1)
 
-                # Actual BPP: raw secret bits / (H × W) — consistent with target definition
-                actual_bpp = (raw_bytes * 8) / (h * w)
+                actual_raw_bpp = stats.get('raw_bpp', round((raw_bytes * 8) / (h * w), 6))
+                actual_embedded_bpp = stats.get('embedded_bpp', round(stats.get('internal_bits_embedded', 0) / (h * w), 6))
+                usable_cap = stats.get('usable_capacity_bits', stats.get('max_capacity_bits', 0))
+                theo_cap = stats.get('theoretical_capacity_bits', usable_cap)
+                cap_util = stats.get('capacity_utilization_%', round((stats.get('internal_bits_embedded', 0) / usable_cap * 100), 2) if usable_cap > 0 else 0.0)
 
                 t1_ex = time.time()
                 extracted, recovered, meta = extract_cnn_da_emd_olsb(
@@ -123,6 +142,7 @@ def run_payload_capacity_experiment(
                     password=password,
                     alpha=alpha, beta=beta, gamma=gamma,
                     t1=t1, t2=t2,
+                    model=model,
                 )
                 extract_time = time.time() - t1_ex
 
@@ -130,7 +150,9 @@ def run_payload_capacity_experiment(
                 if extracted == secret:
                     ber = 0.0
                     rec_acc = 100.0
+                    extr_ok = True
                 else:
+                    extr_ok = False
                     orig_arr = np.frombuffer(secret, dtype=np.uint8)
                     extr_arr = np.frombuffer(extracted, dtype=np.uint8)
                     min_l = min(len(orig_arr), len(extr_arr))
@@ -148,35 +170,51 @@ def run_payload_capacity_experiment(
                 # Cover recovery accuracy
                 if recovered is not None and recovered.shape == cover.shape:
                     cov_acc = float(np.sum(cover == recovered) / cover.size * 100)
+                    rec_ok = bool(cov_acc == 100.0)
                 else:
                     cov_acc = float("nan")
+                    rec_ok = False
 
                 row.update({
-                    "actual_bpp":         round(actual_bpp, 6),
-                    "psnr":               round(psnr_val, 2),
-                    "ssim":               round(ssim_val, 4),
-                    "mse":                round(mse_val, 4),
-                    "ber":                round(ber, 6),
-                    "payload_recovery_%": round(rec_acc, 2),
-                    "cover_recovery_%":   round(cov_acc, 2),
-                    "embed_time_s":       round(embed_time, 4),
-                    "extract_time_s":     round(extract_time, 4),
-                    "max_capacity_bits":  int(stats.get("max_capacity_bits", 0)),
-                    "status":             "success",
+                    "actual_bpp":                 actual_raw_bpp,
+                    "actual_raw_bpp":             actual_raw_bpp,
+                    "actual_embedded_bpp":        actual_embedded_bpp,
+                    "psnr":                       round(psnr_val, 2),
+                    "ssim":                       round(ssim_val, 4),
+                    "mse":                        round(mse_val, 4),
+                    "ber":                        round(ber, 6),
+                    "extraction_success":         extr_ok,
+                    "recovery_success":           rec_ok,
+                    "payload_recovery_%":         round(rec_acc, 2),
+                    "cover_recovery_%":           round(cov_acc, 2),
+                    "usable_capacity_bits":       int(usable_cap),
+                    "theoretical_capacity_bits":  int(theo_cap),
+                    "capacity_utilization_%":     float(cap_util),
+                    "embed_time_s":               round(embed_time, 4),
+                    "extract_time_s":             round(extract_time, 4),
+                    "max_capacity_bits":          int(usable_cap),
+                    "status":                     "success",
                 })
             except Exception as exc:
                 row.update({
-                    "actual_bpp":         float("nan"),
-                    "psnr":               float("nan"),
-                    "ssim":               float("nan"),
-                    "mse":                float("nan"),
-                    "ber":                float("nan"),
-                    "payload_recovery_%": float("nan"),
-                    "cover_recovery_%":   float("nan"),
-                    "embed_time_s":       float("nan"),
-                    "extract_time_s":     float("nan"),
-                    "max_capacity_bits":  0,
-                    "status":             f"FAILED: {str(exc)[:120]}",
+                    "actual_bpp":                 float("nan"),
+                    "actual_raw_bpp":             float("nan"),
+                    "actual_embedded_bpp":        float("nan"),
+                    "psnr":                       float("nan"),
+                    "ssim":                       float("nan"),
+                    "mse":                        float("nan"),
+                    "ber":                        float("nan"),
+                    "extraction_success":         False,
+                    "recovery_success":           False,
+                    "payload_recovery_%":         float("nan"),
+                    "cover_recovery_%":           float("nan"),
+                    "usable_capacity_bits":       0,
+                    "theoretical_capacity_bits":  0,
+                    "capacity_utilization_%":     0.0,
+                    "embed_time_s":               float("nan"),
+                    "extract_time_s":             float("nan"),
+                    "max_capacity_bits":          0,
+                    "status":                     f"FAILED: {str(exc)[:120]}",
                 })
 
             rows.append(row)
