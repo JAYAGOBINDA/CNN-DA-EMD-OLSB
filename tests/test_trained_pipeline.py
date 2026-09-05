@@ -80,30 +80,24 @@ class TestTrainedDistortionCNNPipeline(unittest.TestCase):
         password = "ResearchPassword2026!"
 
         # 1. Embed
-        stego_dual, stats = model_wrapper.embed(cover, secret_bytes, password=password)
-        s1, s2 = stego_dual
+        stego_rgb, stats = model_wrapper.embed(cover, secret_bytes, password=password)
 
-        self.assertIsInstance(stego_dual, tuple)
-        self.assertEqual(len(stego_dual), 2)
-        self.assertEqual(s1.shape, cover.shape)
-        self.assertEqual(s2.shape, cover.shape)
+        self.assertIsInstance(stego_rgb, np.ndarray)
+        self.assertEqual(stego_rgb.shape, cover.shape)
         self.assertTrue(stats.get('cnn_enabled', False))
         self.assertTrue(stats.get('cnn_trained', False))
 
         # Real metrics computation
-        psnr_s1 = calculate_psnr(cover, s1)
-        psnr_s2 = calculate_psnr(cover, s2)
-        ssim_s1 = calculate_ssim(cover, s1)
-        ssim_s2 = calculate_ssim(cover, s2)
-        mse_s1  = compute_mse(cover, s1)
+        psnr_val = calculate_psnr(cover, stego_rgb)
+        ssim_val = calculate_ssim(cover, stego_rgb)
+        mse_val  = compute_mse(cover, stego_rgb)
 
-        self.assertGreater(psnr_s1, 35.0, f"PSNR S1 ({psnr_s1:.2f} dB) below 35 dB")
-        self.assertGreater(psnr_s2, 35.0, f"PSNR S2 ({psnr_s2:.2f} dB) below 35 dB")
-        self.assertGreater(ssim_s1, 0.95, f"SSIM S1 ({ssim_s1:.4f}) below 0.95")
+        self.assertGreater(psnr_val, 35.0, f"PSNR ({psnr_val:.2f} dB) below 35 dB")
+        self.assertGreater(ssim_val, 0.95, f"SSIM ({ssim_val:.4f}) below 0.95")
 
         # 2. Extract
         extracted_bytes, recovered_cover, meta = model_wrapper.extract(
-            stego_dual, password=password, t1=stats['t1'], t2=stats['t2']
+            stego_rgb, password=password, t1=stats['t1'], t2=stats['t2']
         )
 
         self.assertEqual(extracted_bytes, secret_bytes, "Extracted bytes do not match original secret!")
@@ -115,13 +109,14 @@ class TestTrainedDistortionCNNPipeline(unittest.TestCase):
         pixel_error_rate = np.mean(diff_cover > 0)
         self.assertEqual(pixel_error_rate, 0.0, f"Carrier recovery must be bit-exact! Error rate: {pixel_error_rate}")
 
-        print(f"[OK] End-to-end verified: PSNR S1={psnr_s1:.2f} dB, S2={psnr_s2:.2f} dB, SSIM={ssim_s1:.4f}, BER={ber:.4f}")
+        print(f"[OK] End-to-end verified: PSNR={psnr_val:.2f} dB, SSIM={ssim_val:.4f}, BER={ber:.4f}")
 
     def test_04_benchmark_runner_integration(self):
         """Verify that BenchmarkRunner operates with the trained model without errors."""
         runner = BenchmarkRunner()
-        np.random.seed(42)
-        cover = np.random.randint(20, 230, (128, 128, 3), dtype=np.uint8)
+        y, x = np.ogrid[:128, :128]
+        gradient = ((x + y) * 2) % 200 + 30
+        cover = np.stack([gradient, (gradient + 20) % 220 + 20, (gradient + 40) % 220 + 20], axis=-1).astype(np.uint8)
         res = runner.run_single_model("CNN-DA-EMD-OLSB", cover, "Benchmark payload test")
 
         self.assertGreater(res['PSNR_dB'], 35.0)

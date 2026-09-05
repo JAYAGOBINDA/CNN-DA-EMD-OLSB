@@ -71,11 +71,13 @@ class TestAuditFixes(unittest.TestCase):
 
     def test_05_bpp_and_embedding_extraction(self):
         """Items 5 & 7: Verify embedding, extraction, cover recovery, and BPP metrics."""
-        img = np.random.randint(30, 220, (128, 128, 3), dtype=np.uint8)
+        y, x = np.ogrid[:256, :256]
+        gradient = ((x + y) * 2) % 200 + 30
+        img = np.stack([gradient, (gradient + 20) % 220 + 20, (gradient + 40) % 220 + 20], axis=-1).astype(np.uint8)
         secret = b"Antigravity verified payload for CNN-DA-EMD-OLSB!"
         test_gamma = 0.75
 
-        (s1, s2), stats = embed_cnn_da_emd_olsb(
+        stego, stats = embed_cnn_da_emd_olsb(
             img, secret, password=self.password, gamma=test_gamma
         )
 
@@ -87,7 +89,7 @@ class TestAuditFixes(unittest.TestCase):
 
         # Extraction
         extracted, recovered, meta = extract_cnn_da_emd_olsb(
-            (s1, s2), password=self.password
+            stego, password=self.password
         )
 
         self.assertEqual(extracted, secret, "Extracted payload must match original exactly")
@@ -95,8 +97,10 @@ class TestAuditFixes(unittest.TestCase):
         self.assertAlmostEqual(meta['gamma'], test_gamma, places=2, msg="Gamma stored in header must match on extraction")
 
     def test_08_payload_capacity_sweep(self):
-        """Item 8: Verify payload-capacity experiment across all 6 BPP levels."""
-        img = np.random.randint(30, 220, (128, 128, 3), dtype=np.uint8)
+        """Item 8: Verify payload-capacity experiment across BPP levels."""
+        y, x = np.ogrid[:256, :256]
+        gradient = ((x + y) * 2) % 200 + 30
+        img = np.stack([gradient, (gradient + 20) % 220 + 20, (gradient + 40) % 220 + 20], axis=-1).astype(np.uint8)
         test_bpps = [0.001, 0.005]  # fast subset for unit test
 
         results_df, stats_df, figs = run_payload_capacity_experiment(

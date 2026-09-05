@@ -114,7 +114,7 @@ def run_payload_capacity_experiment(
                 secret = _make_payload(raw_bytes, seed=img_idx * 1000 + int(bpp_target * 10000))
 
                 t0 = time.time()
-                stego_dual, stats = embed_cnn_da_emd_olsb(
+                stego_img, stats = embed_cnn_da_emd_olsb(
                     cover_rgb=cover,
                     secret_data=secret,
                     password=password,
@@ -124,11 +124,10 @@ def run_payload_capacity_experiment(
                     model=model,
                 )
                 embed_time = time.time() - t0
-                s1, s2 = stego_dual
 
-                psnr_val = calculate_psnr(cover, s1)
-                ssim_val = calculate_ssim(cover, s1)
-                mse_val  = compute_mse(cover, s1)
+                psnr_val = calculate_psnr(cover, stego_img)
+                ssim_val = calculate_ssim(cover, stego_img)
+                mse_val  = compute_mse(cover, stego_img)
 
                 actual_raw_bpp = stats.get('raw_bpp', round((raw_bytes * 8) / (h * w), 6))
                 actual_embedded_bpp = stats.get('embedded_bpp', round(stats.get('internal_bits_embedded', 0) / (h * w), 6))
@@ -138,7 +137,7 @@ def run_payload_capacity_experiment(
 
                 t1_ex = time.time()
                 extracted, recovered, meta = extract_cnn_da_emd_olsb(
-                    stego_dual=stego_dual,
+                    stego_input=stego_img,
                     password=password,
                     alpha=alpha, beta=beta, gamma=gamma,
                     t1=t1, t2=t2,
@@ -327,3 +326,17 @@ def get_capacity_zip(
             nm = names[i] if i < len(names) else f"figure_{i+1}"
             zf.writestr(f"{nm}.png", fb.getvalue())
     return buf.getvalue()
+
+
+if __name__ == "__main__":
+    print("Testing payload_capacity experiment execution...")
+    y, x = np.mgrid[0:128, 0:128]
+    img = np.stack([y * 2, x * 2, (y + x)], axis=2).astype(np.uint8)
+    rdf, sdf, figs = run_payload_capacity_experiment(
+        images=[img],
+        image_names=["Synthetic_Gradient_128"],
+        bpp_levels=[0.001, 0.005],
+    )
+    print(rdf[["image_id", "target_bpp", "actual_embedded_bpp", "psnr", "ssim", "ber", "cover_recovery_%"]])
+    print("Payload capacity experiment successfully verified!")
+

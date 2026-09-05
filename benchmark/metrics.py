@@ -100,7 +100,7 @@ def evaluate_model_performance(
         wpsnr_val = calculate_wpsnr(cover, stego_eval_img)
 
     h, w, c = cover.shape
-    bpp = total_embedded_bits / (h * w * c)
+    bpp = total_embedded_bits / (h * w)
     max_cap = h * w * c * 3
 
     # Bit Error Rate (BER) & Payload Recovery

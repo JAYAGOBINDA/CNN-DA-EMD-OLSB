@@ -438,14 +438,13 @@ def generate_stego_for_security(
             h, w, _ = cov.shape
             raw_bytes = max(1, int(payload_bpp * h * w / 8) - OVERHEAD)
             rng = np.random.default_rng(idx)
-            secret = bytes(rng.integers(0, 256, raw_bytes, dtype=np.uint8))
-            stego_dual, _ = embed_cnn_da_emd_olsb(
+            stego_img, _ = embed_cnn_da_emd_olsb(
                 cover_rgb=cov, secret_data=secret, password=password,
                 alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2, payload_type=0,
                 model=model,
             )
             ok_covers.append(cov)
-            ok_stegos.append(stego_dual[0])  # S1
+            ok_stegos.append(stego_img)
             ok_names.append(nm)
         except Exception:
             pass  # skip failed images

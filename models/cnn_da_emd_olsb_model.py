@@ -2,7 +2,7 @@
 Model 6 (Proposed): CNN-Guided Distortion-Aware Adaptive EMD-OLSB
               (CNN-DA-EMD-OLSB) Model Wrapper
 
-Wraps core dual-stego algorithm (`core/cnn_da_emd_olsb.py`) in a clean class
+Wraps core single-stego algorithm (`core/cnn_da_emd_olsb.py`) in a clean class
 interface compatible with the project's BaseModelAdapter pattern.
 """
 
@@ -16,7 +16,7 @@ from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb, extract_cnn_da_emd_olsb
 
 class CNNDAEMDOLSBModel:
     """
-    CNN-Guided Distortion-Aware Adaptive EMD-OLSB Model (Dual Stego Image).
+    CNN-Guided Distortion-Aware Adaptive EMD-OLSB Model (Single Stego Image).
     """
 
     def __init__(
@@ -109,15 +109,15 @@ class CNNDAEMDOLSBModel:
         secret_bytes: bytes,
         password: str = "Pass123!",
         payload_type: int = 0
-    ) -> Tuple[Tuple[np.ndarray, np.ndarray], Dict[str, Any]]:
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Embed secret payload into cover RGB image.
 
         Returns:
-            (stego1_rgb, stego2_rgb): Dual stego images.
+            stego_rgb: Single stego RGB image (H×W×3).
             stats_dict: Embedding statistics.
         """
-        stego_dual, stats = embed_cnn_da_emd_olsb(
+        stego_rgb, stats = embed_cnn_da_emd_olsb(
             cover_rgb    = cover_rgb,
             secret_data  = secret_bytes,
             password     = password,
@@ -133,27 +133,32 @@ class CNNDAEMDOLSBModel:
         stats['model_name'] = 'CNN-DA-EMD-OLSB'
         stats['cnn_enabled'] = (self._cnn_model is not None)
         stats['cnn_trained'] = getattr(self, '_cnn_trained', False)
-        return stego_dual, stats
+        stats['cnn_weights_loaded'] = getattr(self, '_cnn_trained', False)
+        stats['cnn_inference_executed'] = bool(self._cnn_model is not None and self.gamma > 0.0)
+        stats['cnn_model_path'] = 'models/distortion_cnn.pth'
+        stats['distortion_source'] = 'CNN+Analytic' if (self.use_cnn and self.gamma > 0) else 'Analytic'
+        stats['single_stego'] = True
+        return stego_rgb, stats
 
     def extract(
         self,
-        stego_dual: Tuple[np.ndarray, np.ndarray],
+        stego_rgb: Any,
         password: str = "Pass123!",
         t1: Optional[float] = None,
         t2: Optional[float] = None,
         gamma: Optional[float] = None
     ) -> Tuple[bytes, np.ndarray, Dict[str, Any]]:
         """
-        Extract secret payload and recover cover image from dual stego images.
+        Extract secret payload and recover cover image from single stego image.
 
         Args:
-            stego_dual: Tuple (stego1_rgb, stego2_rgb).
+            stego_rgb: Single stego image (H×W×3) or legacy tuple (stego1, stego2).
 
         Returns:
             secret_data, recovered_cover_rgb, metadata_dict
         """
         secret_data, recovered_cover, meta = extract_cnn_da_emd_olsb(
-            stego_dual = stego_dual,
+            stego_rgb  = stego_rgb,
             password   = password,
             alpha      = self.alpha,
             beta       = self.beta,

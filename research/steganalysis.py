@@ -168,12 +168,12 @@ def generate_stego_dataset(
             raw_bytes = max(1, int(payload_bpp * h * w / 8) - OVERHEAD)
             rng    = np.random.default_rng(idx + 7)
             secret = bytes(rng.integers(0, 256, raw_bytes, dtype=np.uint8))
-            dual, _ = embed_cnn_da_emd_olsb(
+            stego_img, _ = embed_cnn_da_emd_olsb(
                 cover_rgb=cov, secret_data=secret, password=password,
                 alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2, payload_type=0,
                 model=model,
             )
-            stegos.append(dual[0])  # use S1
+            stegos.append(stego_img)
         except Exception:
             stegos.append(None)
 

@@ -179,7 +179,7 @@ class CNNDAEMDOLSBAdapter(BaseModelAdapter):
     - Adaptive capacity per pixel driven by distortion class:
       Class 0/1 → EMD mod-5 on R-G channel pairs (≈2.32 bits per pair)
       Class 2   → Adaptive multi-bit OLSB on Blue channel (1-3 bits)
-    - Dual Stego Image Output (S1, S2) for exact cover recovery via averaging
+    - Single Stego Image Output for bit-exact cover recovery via embedded location map
     - AES-256-GCM authenticated encryption for payload security
     """
     def __init__(self):
@@ -192,13 +192,13 @@ class CNNDAEMDOLSBAdapter(BaseModelAdapter):
         payload: Union[bytes, str],
         password: str = "Pass123!",
         payload_type: int = 0
-    ) -> Tuple[Tuple[np.ndarray, np.ndarray], Dict[str, Any]]:
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         payload_bytes = payload.encode('utf-8') if isinstance(payload, str) else payload
         return self.model.embed(cover_rgb, payload_bytes, password=password, payload_type=payload_type)
 
     def extract(
         self,
-        stego_output: Tuple[np.ndarray, np.ndarray],
+        stego_output: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]],
         stats: Dict[str, Any],
         password: str = "Pass123!"
     ) -> Tuple[bytes, np.ndarray]:
@@ -216,8 +216,9 @@ class CNNDAEMDOLSBAdapter(BaseModelAdapter):
             'Model': 'CNN-DA-EMD-OLSB (Proposed)',
             'Input Type': 'RGB Color Photo',
             'Payload Type': 'Text / Binary / Secret Image',
-            'Output Type': 'Dual Stego Photos (S1, S2)',
-            'Reversible?': 'Yes (Bit-Exact Cover Recovery via Dual-Image Averaging & AES-256 Authentication)',
+            'Output Type': 'Single Stego Photo',
+            'Reversible?': 'Yes (Bit-Exact Cover Recovery via Single-Stego Location-Map & AES-256 Authentication)',
             'Deep Learning?': 'Yes (DistortionCNN Per-Channel Map Network)',
-            'Special Requirements': 'CNN Distortion-Guided EMD mod-5 + Adaptive OLSB, Dual-Stego Reversibility, AES-256-GCM'
+            'Special Requirements': 'CNN Distortion-Guided EMD mod-5 + Adaptive OLSB, Single-Stego Reversibility, AES-256-GCM'
         }
+
