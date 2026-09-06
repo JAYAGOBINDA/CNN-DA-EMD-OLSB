@@ -153,12 +153,15 @@ def evaluate_attack_robustness(
             orig_arr = np.frombuffer(original_payload, dtype=np.uint8)
             extr_arr = np.frombuffer(extracted_payload, dtype=np.uint8)
             min_l = min(len(orig_arr), len(extr_arr))
+            max_l = max(len(orig_arr), len(extr_arr))
             if min_l > 0:
-                orig_bits = np.unpackbits(orig_arr[:min_l])
-                extr_bits = np.unpackbits(extr_arr[:min_l])
-                bit_errors = int(np.sum(orig_bits != extr_bits))
-                total_evaluated = len(orig_bits)
-                ber = float(bit_errors / total_evaluated)
+                orig_bits = np.unpackbits(orig_arr)
+                extr_bits = np.unpackbits(extr_arr)
+                min_b = min(len(orig_bits), len(extr_bits))
+                max_b = max(len(orig_bits), len(extr_bits))
+                bit_errors = int(np.sum(orig_bits[:min_b] != extr_bits[:min_b]))
+                bit_errors += abs(len(orig_bits) - len(extr_bits))
+                ber = float(bit_errors / max_b) if max_b > 0 else 1.0
                 bit_recovery_acc = float((1.0 - ber) * 100.0)
             else:
                 ber = 1.0

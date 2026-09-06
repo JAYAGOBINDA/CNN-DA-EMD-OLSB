@@ -104,6 +104,14 @@ if TORCH_AVAILABLE:
 
 _TRAINED_CNN_SINGLETON = None
 
+# --- CNN inference tracking ---
+_LAST_CNN_INFERENCE_EXECUTED = False
+
+
+def was_cnn_inference_executed() -> bool:
+    """Return True if the most recent compute_distortion_maps call executed a CNN forward pass."""
+    return _LAST_CNN_INFERENCE_EXECUTED
+
 
 def load_trained_distortion_cnn(device: Optional['torch.device'] = None) -> 'Optional[DistortionCNN]':
     """
@@ -182,6 +190,9 @@ def compute_distortion_maps(
     Returns:
         (D_r, D_g, D_b): three H×W float32 arrays in [0, 1].
     """
+    global _LAST_CNN_INFERENCE_EXECUTED
+    _LAST_CNN_INFERENCE_EXECUTED = False
+
     gamma = float(np.clip(gamma, 0.0, 1.0))
     requires_cnn = (gamma > 0.0) and use_cnn
 
@@ -210,6 +221,7 @@ def compute_distortion_maps(
 
             with torch.no_grad():
                 out = model(tensor)  # (1, 3, H, W)
+            _LAST_CNN_INFERENCE_EXECUTED = True  # actual forward pass completed
 
             out_np = out.squeeze(0).detach().cpu().numpy()
             D_cnn_r = _normalize_01(out_np[0])

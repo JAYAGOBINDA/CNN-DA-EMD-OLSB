@@ -72,7 +72,7 @@ class BenchmarkRunner:
         extracted_bytes, recovered_cover = adapter.extract(stego_output, stats, password=password)
         extract_time = time.time() - t1
 
-        total_bits = stats.get('total_bits_embedded', len(payload_bytes) * 8)
+        total_bits = stats.get('actual_embedded_bits', stats.get('total_bits_embedded', len(payload_bytes) * 8))
         is_dual = stats.get('dual_images', False)
 
         metrics = evaluate_model_performance(

@@ -115,15 +115,18 @@ def evaluate_model_performance(
             orig_arr = np.frombuffer(original_payload, dtype=np.uint8)
             extr_arr = np.frombuffer(extracted_payload, dtype=np.uint8)
             min_l = min(len(orig_arr), len(extr_arr))
+            max_l = max(len(orig_arr), len(extr_arr))
             if min_l > 0:
                 match_count = np.sum(orig_arr[:min_l] == extr_arr[:min_l])
-                payload_rec_acc = float((match_count / max(len(orig_arr), len(extr_arr))) * 100.0)
+                payload_rec_acc = float((match_count / max_l) * 100.0)
                 
                 orig_bits = np.unpackbits(orig_arr)
                 extr_bits = np.unpackbits(extr_arr)
                 min_b = min(len(orig_bits), len(extr_bits))
-                errors = np.sum(orig_bits[:min_b] != extr_bits[:min_b])
-                ber = float(errors / min_b)
+                max_b = max(len(orig_bits), len(extr_bits))
+                errors = int(np.sum(orig_bits[:min_b] != extr_bits[:min_b]))
+                errors += abs(len(orig_bits) - len(extr_bits))
+                ber = float(errors / max_b) if max_b > 0 else 1.0
             else:
                 ber = 1.0
                 payload_rec_acc = 0.0

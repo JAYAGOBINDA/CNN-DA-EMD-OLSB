@@ -134,7 +134,7 @@ class CNNDAEMDOLSBModel:
         stats['cnn_enabled'] = (self._cnn_model is not None)
         stats['cnn_trained'] = getattr(self, '_cnn_trained', False)
         stats['cnn_weights_loaded'] = getattr(self, '_cnn_trained', False)
-        stats['cnn_inference_executed'] = bool(self._cnn_model is not None and self.gamma > 0.0)
+        # cnn_inference_executed is set truthfully by the core algorithm — do NOT override
         stats['cnn_model_path'] = 'models/distortion_cnn.pth'
         stats['distortion_source'] = 'CNN+Analytic' if (self.use_cnn and self.gamma > 0) else 'Analytic'
         stats['single_stego'] = True

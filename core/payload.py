@@ -14,7 +14,7 @@ Header Format (64 bytes, big-endian):
   t2              f    distortion threshold 2
   gamma           f    CNN blending weight
   crc             I    CRC32 of raw plaintext
-  locmap_size     I    compressed location map size in bytes (0 = no map)
+  locmap_size     I    compressed recovery side information size in bytes (0 = no info)
   padding         4s   reserved
 """
 
@@ -52,8 +52,10 @@ def prepare_payload(
     is_compressed = 1 if len(compressed) < len(data) else 0
     payload_to_encrypt = compressed if is_compressed else data
 
-    # Step 2: AES-256-GCM Encryption
-    salt, nonce, ciphertext = encrypt_payload(payload_to_encrypt, password)
+    # Step 2: AES-256-GCM Encryption (with recovery side info as AAD for integrity)
+    salt, nonce, ciphertext = encrypt_payload(
+        payload_to_encrypt, password, associated_data=location_map_data
+    )
 
     # Step 3: Compute CRC32 of raw payload data
     crc = binascii.crc32(data) & 0xffffffff
@@ -132,8 +134,10 @@ def parse_payload(full_payload: bytes, password: str) -> Tuple[bytes, Dict[str, 
 
     ciphertext = remainder[:cipher_len]
 
-    # Decrypt
-    decrypted = decrypt_payload(ciphertext, password, salt, nonce)
+    # Decrypt (with recovery side info as AAD for integrity verification)
+    decrypted = decrypt_payload(
+        ciphertext, password, salt, nonce, associated_data=location_map_data
+    )
 
     # Decompress if needed
     if is_compressed == 1:

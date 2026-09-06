@@ -153,6 +153,23 @@ class TestComprehensiveSingleStego(unittest.TestCase):
         stego_out = proposed['Stego_Output']
         self.assertIsInstance(stego_out, np.ndarray, "Proposed stego output must be single np.ndarray")
 
+    def test_05_gamma_roundtrip_values(self):
+        """Test deterministic gamma bootstrap recovery across diverse gamma values: 0.0, 0.5, 0.61, 1.0."""
+        secret = b"Testing deterministic gamma bootstrap recovery for 0.0, 0.5, 0.61, 1.0!"
+        for g in [0.0, 0.5, 0.61, 1.0]:
+            model = CNNDAEMDOLSBModel(gamma=g, use_cnn=(g > 0.0))
+            stego, stats = model.embed(self.test_cover, secret, password=self.password)
+
+            # Extraction must recover gamma deterministically from bootstrap header
+            extracted_secret, recovered_cover, meta = model.extract(stego, password=self.password)
+
+            self.assertEqual(extracted_secret, secret, f"Secret failed to recover for gamma={g}")
+            self.assertTrue(np.array_equal(self.test_cover, recovered_cover),
+                            f"Cover failed to recover bit-exactly for gamma={g}")
+            self.assertAlmostEqual(meta.get('gamma', 0.0), g, places=2,
+                                  msg=f"Recovered gamma does not match embedded gamma {g}")
+
 
 if __name__ == '__main__':
     unittest.main()
+
