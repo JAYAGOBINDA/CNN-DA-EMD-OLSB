@@ -1,0 +1,7 @@
+target_bpp,n_images,n_success,psnr_mean,psnr_std,psnr_min,psnr_max,ssim_mean,ssim_std,ssim_min,ssim_max,mse_mean,mse_std,mse_min,mse_max,ber_mean,ber_std,ber_min,ber_max,payload_recovery_%_mean,payload_recovery_%_std,payload_recovery_%_min,payload_recovery_%_max
+0.001,6,0,,,,,,,,,,,,,,,,,,,,
+0.005,6,0,,,,,,,,,,,,,,,,,,,,
+0.01,6,0,,,,,,,,,,,,,,,,,,,,
+0.02,6,0,,,,,,,,,,,,,,,,,,,,
+0.05,6,0,,,,,,,,,,,,,,,,,,,,
+0.1,6,0,,,,,,,,,,,,,,,,,,,,

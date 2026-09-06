@@ -229,7 +229,7 @@ def _tab_payload_capacity():
         bpp_options = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1]
         bpp_sel = st.multiselect(
             "BPP Levels to Test:", options=bpp_options,
-            default=[0.001, 0.01, 0.05, 0.1], key="pc_bpp"
+            default=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1], key="pc_bpp"
         )
         password = st.text_input("Embedding Password:", value="Pass123!",
                                  type="password", key="pc_pass")
@@ -280,10 +280,12 @@ def _tab_payload_capacity():
         figs       = st.session_state["pc_figs"]
 
         st.markdown("#### 📋 Per-Image Results")
-        display_cols = [c for c in ["image_id","image_hw","target_bpp","actual_bpp",
-            "payload_bits","payload_bytes","psnr","ssim","mse","ber",
-            "payload_recovery_%","cover_recovery_%","embed_time_s","status"]
-            if c in results_df.columns]
+        display_cols = [c for c in [
+            "image_id", "image_hw", "requested_bpp", "actual_raw_bpp", "actual_embedded_bpp",
+            "payload_size_bits", "usable_capacity_bits", "capacity_utilization_%",
+            "psnr", "ssim", "mse", "ber", "extraction_success", "recovery_success",
+            "payload_recovery_%", "cover_recovery_%", "embed_time_s", "status"
+        ] if c in results_df.columns]
         st.dataframe(results_df[display_cols], use_container_width=True)
 
         st.markdown("#### 📊 Summary Statistics per BPP Level")
@@ -442,14 +444,31 @@ def _tab_statistical_testing():
 
         # Downloads
         st.markdown("#### 💾 Download Statistical Results")
-        d1, d2 = st.columns(2)
+        d1, d2, d3, d4 = st.columns(4)
         if res["observation_matrix"] is not None:
-            d1.download_button("📥 Download Observation Matrix CSV",
+            d1.download_button("📥 Observation Matrix CSV",
                                data=res["observation_matrix"].to_csv().encode(),
                                file_name="observation_matrix.csv", mime="text/csv",
                                key="dl_st_obs")
+        if res["friedman_result"] is not None:
+            fr_dict = dict(res["friedman_result"])
+            fr_dict["kendall_w"] = res.get("effect_size", "")
+            d2.download_button("📥 Friedman & Kendall CSV",
+                               data=pd.DataFrame([fr_dict]).to_csv(index=False).encode(),
+                               file_name="friedman_kendall_results.csv", mime="text/csv",
+                               key="dl_st_fr")
+        if res["ranks_df"] is not None:
+            d3.download_button("📥 Average Ranks CSV",
+                               data=res["ranks_df"].to_csv(index=False).encode(),
+                               file_name="average_ranks.csv", mime="text/csv",
+                               key="dl_st_ranks")
+        if res["nemenyi_result"] is not None:
+            d4.download_button("📥 Nemenyi Post-Hoc CSV",
+                               data=res["nemenyi_result"].to_csv(index=False).encode(),
+                               file_name="nemenyi_posthoc.csv", mime="text/csv",
+                               key="dl_st_nem")
         if "st_zip" in st.session_state:
-            d2.download_button("📦 Download All (ZIP)",
+            st.download_button("📦 Download All Statistical Artifacts (ZIP)",
                                data=st.session_state["st_zip"],
                                file_name="statistical_testing_results.zip",
                                mime="application/zip", key="dl_st_zip")
@@ -875,6 +894,18 @@ def _tab_steganalysis():
         res = st.session_state["sa_result"]
         metrics = res["metrics"]
         split_info = res["split_info"]
+
+        # ── DATASET SPLIT INFO ───────────────────────────────────────────────
+        if "split_info" in res:
+            si = res["split_info"]
+            st.markdown("#### 📋 Dataset Split (Data Leakage Prevention Active)")
+            sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+            sc1.metric("Total Samples", si.get("total_samples", si.get("total_image_pairs", "?")))
+            sc2.metric("Train Samples", si.get("train_samples", si.get("train_pairs", "?")))
+            sc3.metric("Val Samples",   si.get("val_samples",   si.get("val_pairs",   "?")))
+            sc4.metric("Test Samples",  si.get("test_samples",  si.get("test_pairs",  "?")))
+            sc5.metric("Total Patches", si.get("total_patches", "?"))
+            st.caption(f"**Split method:** {si.get('split_method','')}")
 
         # ── COLLAPSE DETECTION WARNING BANNER ─────────────────────────────────
         if metrics.get("is_collapsed"):

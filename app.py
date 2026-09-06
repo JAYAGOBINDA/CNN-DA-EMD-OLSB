@@ -132,7 +132,7 @@ st.markdown("""
         <div class="hero-subtitle">
             CNN-Guided Distortion-Aware Adaptive EMD-OLSB Framework for Reversible Data Hiding in RGB Images<br>
             Benchmarking 5 Literature Baselines (MPEH-RDH, MCSH-RDH, CNN-RDH, SRDNN-Stego, EMD-OLSB) vs
-            <b>Proposed System: CNN-DA-EMD-OLSB (Dual-Stego RDH)</b>
+            <b>Proposed System: CNN-DA-EMD-OLSB (Single-Stego RDH)</b>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -158,10 +158,16 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("⚙️ CNN-DA-EMD-OLSB Parameters")
 param_alpha = st.sidebar.slider("Sobel Gradient Weight (α)", 0.0, 1.0, 0.5, 0.05)
 param_beta  = st.sidebar.slider("Local Variance Weight (β)", 0.0, 1.0, 0.5, 0.05)
-param_gamma = st.sidebar.slider("CNN Blend Factor (γ)", 0.0, 1.0, 0.6, 0.05,
-    help="Blend between CNN distortion map (γ=1.0) and analytic Sobel+Var map (γ=0.0)")
-param_t1    = st.sidebar.slider("Smooth / Moderate Threshold (T1)", 0.1, 0.5, 0.33, 0.01)
-param_t2    = st.sidebar.slider("Moderate / High Threshold (T2)", 0.51, 0.9, 0.66, 0.01)
+param_gamma = st.sidebar.slider("CNN Guidance Fusion Weight (γ)", 0.0, 1.0, 0.6, 0.05)
+param_t1    = st.sidebar.slider("Threshold 1 (T1: Smooth/Moderate)", 0.05, 0.5, 0.33, 0.01)
+param_t2    = st.sidebar.slider("Threshold 2 (T2: Moderate/Texture)", 0.5, 0.95, 0.66, 0.01)
+
+# Diagnostic verification badge for DistortionCNN weights
+cnn_adapter = runner.adapters.get('CNN-DA-EMD-OLSB')
+if cnn_adapter and getattr(cnn_adapter.model, '_cnn_trained', False):
+    st.sidebar.success("🧠 Loaded trained DistortionCNN from `models/distortion_cnn.pth`")
+else:
+    st.sidebar.error("❌ Trained DistortionCNN (`models/distortion_cnn.pth`) Not Active")
 
 import base64
 
@@ -234,9 +240,9 @@ if page == "🏠 Home / Architecture":
                     R-G coupled via EMD mod-5: f(r,g) = (r + 2g) mod 5.<br>
                     Blue channel: independent adaptive OLSB (3 bits for class 2).
                 </li>
-                <li><b>Phase 4 — Dual-Stego Reversibility</b><br>
-                    Two stego images S1 &amp; S2 produced. Cover recovered exactly:
-                    p_orig = round((S1 + S2) / 2). AES-256-GCM payload authentication.
+                <li><b>Phase 4 — Single-Stego Reversible Recovery</b><br>
+                    Single stego image S produced. Cover recovered bit-exactly via
+                    embedded compressed location map. AES-256-GCM payload authentication.
                 </li>
             </ol>
         </div>
@@ -244,21 +250,22 @@ if page == "🏠 Home / Architecture":
     with arch_col2:
         st.markdown("""
         <div class="feature-card">
-            <h4>📊 Performance Targets vs Baseline EMD-OLSB</h4>
+            <h4>📊 Literature Baseline vs Proposed Design Targets</h4>
             <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
                 <tr style="border-bottom:1px solid #6366f1">
                     <th align="left">Metric</th>
-                    <th>EMD-OLSB (Baseline)</th>
-                    <th>CNN-DA-EMD-OLSB</th>
+                    <th>EMD-OLSB (Literature Baseline)</th>
+                    <th>CNN-DA-EMD-OLSB (Design Target)</th>
                 </tr>
-                <tr><td>PSNR</td><td>~38-42 dB</td><td style="color:#4ade80">~42-48 dB</td></tr>
-                <tr><td>SSIM</td><td>~0.95</td><td style="color:#4ade80">&gt;0.97</td></tr>
-                <tr><td>BPP (capacity)</td><td>~0.5</td><td style="color:#4ade80">1.2 – 2.5</td></tr>
-                <tr><td>BER</td><td>0.0</td><td style="color:#4ade80">0.0</td></tr>
-                <tr><td>Reversibility</td><td>Dual avg</td><td style="color:#4ade80">Dual avg + AES auth</td></tr>
+                <tr><td>PSNR</td><td>~38-42 dB (Target)</td><td style="color:#4ade80">~42-48 dB (Target)</td></tr>
+                <tr><td>SSIM</td><td>~0.95 (Target)</td><td style="color:#4ade80">&gt;0.97 (Target)</td></tr>
+                <tr><td>BPP (capacity)</td><td>~0.5 (Target)</td><td style="color:#4ade80">1.2 – 2.5 (Target)</td></tr>
+                <tr><td>BER</td><td>0.0 (Target)</td><td style="color:#4ade80">0.0 (Target)</td></tr>
+                <tr><td>Reversibility</td><td>Dual avg</td><td style="color:#4ade80">Single-stego exact recovery + AES auth</td></tr>
                 <tr><td>CNN guidance</td><td>❌ None</td><td style="color:#4ade80">✅ DistortionCNN</td></tr>
                 <tr><td>RGB-adaptive</td><td>❌ Flat</td><td style="color:#4ade80">✅ Per-channel D map</td></tr>
                 <tr><td>Encryption</td><td>❌ None</td><td style="color:#4ade80">✅ AES-256-GCM</td></tr>
+                <tr><td colspan="3" style="font-size:0.75rem;color:#94a3b8;padding-top:8px"><em>Note: Values above represent published literature baseline metrics and design targets (illustrative). All experimental results displayed in other modules are computed dynamically on the actual test images.</em></td></tr>
             </table>
         </div>
         """, unsafe_allow_html=True)
@@ -317,10 +324,16 @@ elif page == "📥 Embed Payload (Proposed)":
         if uploaded_cover:
             cover_rgb = load_image(uploaded_cover)
             h, w, c = cover_rgb.shape
-            # CNN-DA-EMD-OLSB capacity: R-G EMD pairs carry ~2 bits/pixel + Blue OLSB (~0.2 bits/pixel)
-            max_capacity_bytes = max(100, int((h * w * 2.2) / 8) - 128)
+            from core.cnn_da_emd_olsb import _get_cap_maps, compute_capacity
+            upper_c = (cover_rgb & 0xF8).astype(np.uint8)
+            cnn_m = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
+            cls_r, cls_g, cls_b = _get_cap_maps(upper_c, param_alpha, param_beta, param_gamma, param_t1, param_t2, model=cnn_m)
+            cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_c)
+            usable_cap_bytes = cap_info['usable_capacity_bytes']
+            theo_cap_bytes = cap_info['theoretical_capacity_bytes']
+            max_capacity_bytes = max(64, usable_cap_bytes - 128)
             st.image(cover_rgb, caption=f"Cover Image ({w}x{h})", use_container_width=True)
-            st.caption(f"Estimated Max Capacity: ~{max_capacity_bytes:,} bytes")
+            st.caption(f"Usable Capacity: **{usable_cap_bytes:,} bytes** ({cap_info['usable_capacity_bits']:,} bits) | Theoretical: {theo_cap_bytes:,} bytes")
 
     with col2:
         payload_option = st.radio(
@@ -373,7 +386,9 @@ elif page == "📥 Embed Payload (Proposed)":
         if st.button("🚀 Embed Secret Payload (CNN-DA-EMD-OLSB)", type="primary"):
             with st.spinner("Running CNN distortion maps + adaptive dual-stego embedding..."):
                 try:
-                    stego_dual, stats = embed_cnn_da_emd_olsb(
+                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
+                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
+                    stego_rgb, stats = embed_cnn_da_emd_olsb(
                         cover_rgb=cover_rgb,
                         secret_data=secret_bytes,
                         password=password,
@@ -382,18 +397,16 @@ elif page == "📥 Embed Payload (Proposed)":
                         gamma=param_gamma,
                         t1=param_t1,
                         t2=param_t2,
-                        payload_type=payload_type
+                        payload_type=payload_type,
+                        model=cnn_model
                     )
-                    stego1_rgb, stego2_rgb = stego_dual
                     st.session_state['stego_result'] = {
                         'cover_rgb': cover_rgb,
-                        'stego1_rgb': stego1_rgb,
-                        'stego2_rgb': stego2_rgb,
+                        'stego_rgb': stego_rgb,
                         'stats': stats,
-                        'stego1_bytes': image_to_bytes(stego1_rgb),
-                        'stego2_bytes': image_to_bytes(stego2_rgb)
+                        'stego_bytes': image_to_bytes(stego_rgb)
                     }
-                    st.success("✅ Payload encrypted (AES-256-GCM) and embedded into dual stego images (S1, S2)!")
+                    st.success("✅ Payload encrypted (AES-256-GCM) and embedded into single stego image!")
                 except Exception as e:
                     import traceback
                     st.error(f"Embedding Error: {str(e)}")
@@ -402,105 +415,92 @@ elif page == "📥 Embed Payload (Proposed)":
     if 'stego_result' in st.session_state and st.session_state['stego_result'] is not None:
         res = st.session_state['stego_result']
         c_rgb = res['cover_rgb']
-        s1_rgb = res['stego1_rgb']
-        s2_rgb = res['stego2_rgb']
+        s_rgb = res['stego_rgb']
         stats = res['stats']
 
-        psnr1 = round(calculate_psnr(c_rgb, s1_rgb), 2)
-        psnr2 = round(calculate_psnr(c_rgb, s2_rgb), 2)
-        ssim1 = round(calculate_ssim(c_rgb, s1_rgb), 4)
-        ssim2 = round(calculate_ssim(c_rgb, s2_rgb), 4)
-        mse1  = round(compute_mse(c_rgb, s1_rgb), 4)
-        bpp_val   = stats['bpp']
-        max_cap   = stats['max_capacity_bits']
+        psnr = round(calculate_psnr(c_rgb, s_rgb), 2)
+        ssim = round(calculate_ssim(c_rgb, s_rgb), 4)
+        mse  = round(compute_mse(c_rgb, s_rgb), 4)
 
         # ---- Metrics row ----
-        st.markdown("#### 📊 Embedding Quality Metrics")
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("PSNR (S1)", f"{psnr1} dB")
-        m2.metric("PSNR (S2)", f"{psnr2} dB")
-        m3.metric("SSIM (S1)", f"{ssim1}")
-        m4.metric("SSIM (S2)", f"{ssim2}")
-        m5.metric("BPP", f"{bpp_val}")
-        m6.metric("Max Cap", f"{max_cap:,} bits")
+        st.markdown("#### 📊 Embedding Quality Metrics (Computed on Real Images)")
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
+        m1.metric("PSNR", f"{psnr} dB")
+        m2.metric("SSIM", f"{ssim}")
+        m3.metric("MSE", f"{mse}")
+        m4.metric("Raw BPP", f"{stats['raw_bpp']}")
+        m5.metric("Embedded BPP", f"{stats['embedded_bpp']}")
+        m6.metric("Usable Cap", f"{stats['usable_capacity_bits']:,} b")
+        m7.metric("Distortion", f"{stats.get('distortion_source', 'CNN+Analytic')}")
 
         # ---- Image comparison ----
-        st.markdown("#### 🖼️ Dual Stego Images — Preview & Download")
+        st.markdown("#### 🖼️ Single Stego Image — Preview & Download")
         
-        st.error("⚠️ **CRITICAL: DO NOT right-click to save images!** Browsers compress right-clicked images, destroying pixel-level steganography. **Use the Download buttons below** to save lossless PNGs.")
+        st.error("⚠️ **CRITICAL: DO NOT right-click to save images!** Browsers compress right-clicked images, destroying pixel-level steganography. **Use the Download button below** to save lossless PNG.")
         
-        ic1, ic2, ic3, ic4 = st.columns(4)
+        ic1, ic2, ic3 = st.columns(3)
         ic1.image(c_rgb, caption="Original Cover", use_container_width=True, output_format="PNG")
-        ic2.image(s1_rgb, caption="Stego Image S1", use_container_width=True, output_format="PNG")
-        ic3.image(s2_rgb, caption="Stego Image S2", use_container_width=True, output_format="PNG")
+        ic2.image(s_rgb, caption="Single Stego Image", use_container_width=True, output_format="PNG")
 
-        diff = np.abs(c_rgb.astype(np.int16) - s1_rgb.astype(np.int16)) * 10
+        diff = np.abs(c_rgb.astype(np.int16) - s_rgb.astype(np.int16)) * 10
         diff = np.clip(diff, 0, 255).astype(np.uint8)
-        ic4.image(diff, caption="Difference Map S1 (×10)", use_container_width=True, output_format="PNG")
+        ic3.image(diff, caption="Difference Map (×10)", use_container_width=True, output_format="PNG")
 
-        # ---- Download buttons ----
-        st.markdown("#### 💾 Download Stego Images (PNG — Lossless)")
+        # ---- Download button ----
+        st.markdown("#### 💾 Download Stego Image (PNG — Lossless)")
 
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
-            st.markdown(get_image_download_link(s1_rgb, filename="stego_s1.png", label="💾 Direct Download S1 (stego_s1.png)"), unsafe_allow_html=True)
+            st.markdown(get_image_download_link(s_rgb, filename="stego.png", label="💾 Direct Download (stego.png)"), unsafe_allow_html=True)
             st.download_button(
-                label="💾 Download Stego S1 via Streamlit",
-                data=res['stego1_bytes'],
-                file_name="stego_s1.png",
+                label="💾 Download Stego Image via Streamlit",
+                data=res['stego_bytes'],
+                file_name="stego.png",
                 mime="image/png",
-                key="download_stego_s1_png"
-            )
-        with dl_col2:
-            st.markdown(get_image_download_link(s2_rgb, filename="stego_s2.png", label="💾 Direct Download S2 (stego_s2.png)"), unsafe_allow_html=True)
-            st.download_button(
-                label="💾 Download Stego S2 via Streamlit",
-                data=res['stego2_bytes'],
-                file_name="stego_s2.png",
-                mime="image/png",
-                key="download_stego_s2_png"
+                key="download_stego_png"
             )
 
-        st.info(f"Embedded {stats['total_bits_embedded']:,} bits | "
-                f"EMD digits: {stats.get('total_emd_digits_embedded', 0)} | "
-                f"OLSB bits: {stats.get('total_olsb_bits_embedded', 0)} | "
-                f"BPP: {bpp_val} | Max Capacity: {max_cap:,} bits")
+        st.info(
+            f"Raw Secret: {stats['raw_payload_bits']:,} bits ({stats['raw_payload_bytes']:,} bytes) | "
+            f"Embedded Bitstream: {stats['embedded_bitstream_bits']:,} bits ({stats['embedded_bitstream_bytes']:,} bytes) | "
+            f"Raw Payload BPP: {stats['raw_bpp']} | Embedded Bitstream BPP: {stats['embedded_bpp']} | "
+            f"Usable Capacity: {stats['usable_capacity_bits']:,} bits ({stats['usable_capacity_bytes']:,} bytes) | "
+            f"Theoretical Capacity: {stats['theoretical_capacity_bits']:,} bits | "
+            f"Capacity Utilization: {stats['capacity_utilization_%']}% | "
+            f"Location Map: {stats.get('location_map_bytes', 0)} bytes ({stats.get('location_map_overhead_%', 0)}% overhead)"
+        )
 
 
 # PAGE 3: EXTRACT PAYLOAD (PROPOSED)
 elif page == "📤 Extract Payload (Proposed)":
     st.markdown("### 📤 Extract Secret Payload using CNN-DA-EMD-OLSB (Proposed System)")
     st.info(
-        "📌 Upload **both Stego Images (S1 and S2, PNG)** produced during embedding to extract the payload and recover the cover image."
+        "📌 Upload the **Single Stego Image (PNG)** produced during embedding to extract the payload and bit-exactly recover the cover image."
     )
 
-    col_e1, col_e2, col_e3 = st.columns(3)
+    col_e1, col_e2 = st.columns([2, 1])
     with col_e1:
-        uploaded_stego_s1 = st.file_uploader("1. Upload Stego Image S1 (PNG):", type=["png", "bmp"], key="extract_s1")
+        uploaded_stego = st.file_uploader("1. Upload Stego Image (PNG):", type=["png", "bmp"], key="extract_stego")
     with col_e2:
-        uploaded_stego_s2 = st.file_uploader("2. Upload Stego Image S2 (PNG):", type=["png", "bmp"], key="extract_s2")
-    with col_e3:
-        ext_password = st.text_input("3. Enter Encryption Password:", type="password", value="Pass123!")
+        ext_password = st.text_input("2. Enter Encryption Password:", type="password", value="Pass123!")
 
-    if uploaded_stego_s1 and uploaded_stego_s2 and ext_password:
-        stego1_rgb = load_image(uploaded_stego_s1)
-        stego2_rgb = load_image(uploaded_stego_s2)
-        
-        col_p1, col_p2 = st.columns(2)
-        col_p1.image(stego1_rgb, caption=f"Stego S1 ({stego1_rgb.shape[1]}x{stego1_rgb.shape[0]})", width=300)
-        col_p2.image(stego2_rgb, caption=f"Stego S2 ({stego2_rgb.shape[1]}x{stego2_rgb.shape[0]})", width=300)
+    if uploaded_stego and ext_password:
+        stego_rgb = load_image(uploaded_stego)
+        st.image(stego_rgb, caption=f"Stego Image ({stego_rgb.shape[1]}x{stego_rgb.shape[0]})", width=360)
 
         if st.button("🔓 Extract & Decrypt Secret Payload (CNN-DA-EMD-OLSB)", type="primary"):
-            with st.spinner("Extracting bitstream and recovering cover using CNN-DA-EMD-OLSB dual-stego..."):
+            with st.spinner("Extracting bitstream and recovering cover from single stego image..."):
                 try:
+                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
                     extracted_bytes, recovered_cover, meta = extract_cnn_da_emd_olsb(
-                        stego_dual=(stego1_rgb, stego2_rgb),
+                        stego_input=stego_rgb,
                         password=ext_password,
                         alpha=param_alpha,
                         beta=param_beta,
                         gamma=param_gamma,
                         t1=param_t1,
-                        t2=param_t2
+                        t2=param_t2,
+                        model=cnn_model
                     )
                     st.session_state['extract_result'] = {
                         'extracted_bytes': extracted_bytes,
@@ -508,9 +508,9 @@ elif page == "📤 Extract Payload (Proposed)":
                         'recovered_cover_bytes': image_to_bytes(recovered_cover),
                         'meta': meta
                     }
-                    st.success("✅ Payload Successfully Extracted & Decrypted! Cover Image Recovered via Dual-Image Averaging.")
+                    st.success("✅ Payload Successfully Extracted & Decrypted! Cover Image Recovered Bit-Exactly via Embedded Location Map.")
                 except Exception as e:
-                    st.error(f"❌ Extraction Failed: {str(e)}. Ensure uploaded files are valid PNG stego images with correct password.")
+                    st.error(f"❌ Extraction Failed: {str(e)}. Ensure uploaded file is a valid PNG stego image with correct password.")
 
     if 'extract_result' in st.session_state and st.session_state['extract_result'] is not None:
         ext_res = st.session_state['extract_result']
@@ -524,7 +524,7 @@ elif page == "📤 Extract Payload (Proposed)":
             st.markdown("#### 📋 Header Metadata")
             st.json(meta)
             st.markdown("#### 🗺️ Recovered Cover Image")
-            st.image(recovered_cover, caption="Recovered Cover Image (via dual-image averaging)", use_container_width=True)
+            st.image(recovered_cover, caption="Recovered Cover Image (Bit-Exact via Location Map)", use_container_width=True)
             st.markdown(get_image_download_link(recovered_cover, filename="recovered_cover.png", label="💾 Direct Download Recovered Cover (.png)"), unsafe_allow_html=True)
             st.download_button(
                 label="💾 Download Recovered Cover (PNG)",
@@ -669,30 +669,27 @@ elif page == "📊 Research Model Benchmark (6 Models)":
 # PAGE 5: ROBUSTNESS ATTACK SUITE
 elif page == "🛡️ Robustness Attack Suite":
     st.markdown("### 🛡️ Robustness & Bit Error Analysis Suite")
-    st.info("📌 Upload **both Stego Images (S1, S2)** from the CNN-DA-EMD-OLSB embedding. Attacks are applied to S1 only; S2 remains clean for cover recovery reference.")
+    st.info("📌 Upload the **Single Stego Image** from the CNN-DA-EMD-OLSB embedding. Spatial & lossy attacks are simulated, and extraction robustness is evaluated.")
     
-    att_col1, att_col2 = st.columns(2)
+    att_col1, att_col2 = st.columns([2, 1])
     with att_col1:
-        attack_s1_file = st.file_uploader("Upload Stego Image S1:", type=["png", "bmp"], key="attack_s1")
+        attack_file = st.file_uploader("Upload Stego Image (PNG):", type=["png", "bmp"], key="attack_stego")
     with att_col2:
-        attack_s2_file = st.file_uploader("Upload Stego Image S2:", type=["png", "bmp"], key="attack_s2")
-    
-    attack_pass = st.text_input("Password used during embedding:", type="password", value="Pass123!")
+        attack_pass = st.text_input("Password used during embedding:", type="password", value="Pass123!")
 
-    if attack_s1_file and attack_s2_file and attack_pass:
-        stego_s1 = load_image(attack_s1_file)
-        stego_s2 = load_image(attack_s2_file)
+    if attack_file and attack_pass:
+        stego_img = load_image(attack_file)
+        st.image(stego_img, caption=f"Original Stego Image ({stego_img.shape[1]}x{stego_img.shape[0]})", width=360)
         
         if st.button("⚔️ Execute Robustness Attack Analysis", type="primary"):
-            with st.spinner("Simulating spatial & lossy attacks on S1..."):
-                attacks_dict = run_attack_suite(stego_s1)
+            with st.spinner("Simulating spatial & lossy attacks on single stego image..."):
+                attacks_dict = run_attack_suite(stego_img)
                 
                 attack_summary = []
-                for attack_name, attacked_s1 in attacks_dict.items():
+                for attack_name, attacked_img in attacks_dict.items():
                     res = evaluate_attack_robustness(
-                        clean_stego_s1=stego_s1,
-                        attacked_stego_s1=attacked_s1,
-                        clean_stego_s2=stego_s2,
+                        clean_stego=stego_img,
+                        attacked_stego=attacked_img,
                         password=attack_pass
                     )
                     attack_summary.append({

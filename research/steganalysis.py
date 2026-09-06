@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Steganalysis Module — Cover vs Stego Binary Classification.
 
@@ -412,9 +413,15 @@ def generate_stego_dataset(
     payload_bpp: float = 0.05,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[List[np.ndarray], List[Optional[np.ndarray]], List[str]]:
-    """Generate stego images using CNN-DA-EMD-OLSB (secondary optional workflow)."""
+    """
+    Embed a payload into each cover image using trained CNN-DA-EMD-OLSB.
+    Returns (cover_images, stego_images, names) - stego is None for failures.
+    """
     from core.cnn_da_emd_olsb import embed_cnn_da_emd_olsb
+    from cnn.distortion_cnn import load_trained_distortion_cnn
     OVERHEAD = 96
+
+    model = load_trained_distortion_cnn() if gamma > 0.0 else None
 
     stegos: List[Optional[np.ndarray]] = []
     total  = len(cover_images)
@@ -427,15 +434,20 @@ def generate_stego_dataset(
             raw_bytes = max(1, int(payload_bpp * h * w / 8) - OVERHEAD)
             rng    = np.random.default_rng(idx + 7)
             secret = bytes(rng.integers(0, 256, raw_bytes, dtype=np.uint8))
-            dual, _ = embed_cnn_da_emd_olsb(
+            stego_img, _ = embed_cnn_da_emd_olsb(
                 cover_rgb=cov, secret_data=secret, password=password,
                 alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2, payload_type=0,
+                model=model,
             )
-            stegos.append(dual[0])  # Use S1 as primary stego image
+            stegos.append(stego_img)
         except Exception:
             stegos.append(None)
 
     return cover_images, stegos, cover_names
+
+
+# Convenience alias for consistency
+generate_stego_for_steganalysis = generate_stego_dataset
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -462,6 +474,10 @@ def run_steganalysis(
     n_epochs: Training epochs
     batch_size: Mini-batch size
     lr: Learning rate for AdamW optimizer
+
+    Splitting is strictly grouped by original image pairs to prevent
+    data leakage: cover and stego remain together in either train, val, or test.
+    Patches are extracted AFTER split assignment.
     """
     if not TORCH_AVAILABLE:
         return {"error": "PyTorch is not installed. Cannot execute steganalysis training."}
@@ -497,8 +513,13 @@ def run_steganalysis(
 
     split_info = {
         "total_pairs":        n_pairs,
+        "total_samples":      n_pairs,
+        "total_image_pairs":  n_pairs,
+        "train_samples":      len(tr_pairs),
         "train_pairs":        len(tr_pairs),
+        "val_samples":        len(va_pairs),
         "val_pairs":          len(va_pairs),
+        "test_samples":       len(te_pairs),
         "test_pairs":         len(te_pairs),
         "train_ratio_target": train_ratio,
         "val_ratio_target":   val_ratio,
@@ -506,6 +527,7 @@ def run_steganalysis(
         "val_ratio_actual":   round(len(va_pairs) / n_pairs, 3),
         "test_ratio_actual":  round(len(te_pairs) / n_pairs, 3),
         "split_policy":       "Pair-based splitting: cover and stego remain in identical split.",
+        "split_method":       "Strict pair-based splitting — cover and stego remain together in same split (zero data leakage)",
         "patch_size":         PATCH_SIZE,
         "patch_stride":       PATCH_STRIDE,
         "n_epochs":           n_epochs,
@@ -560,6 +582,7 @@ def run_steganalysis(
     split_info["train_patches"] = len(Xtr)
     split_info["val_patches"]   = len(Xva)
     split_info["test_patches"]  = len(Xte)
+    split_info["total_patches"] = len(Xtr) + len(Xva) + len(Xte)
 
     if len(Xtr) == 0:
         return {"error": "No training patches extracted. Ensure image dimensions >= 64×64.", "split_info": split_info}

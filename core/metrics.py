@@ -72,13 +72,19 @@ def calculate_wpsnr(cover: np.ndarray, stego: np.ndarray) -> float:
 def compute_ber(original_bits: np.ndarray, extracted_bits: np.ndarray) -> float:
     """
     Computes Bit Error Rate (BER) between original payload bits and extracted bits.
-    BER = (Number of incorrect bits) / (Total number of bits)
+    Missing bits (from length mismatches) are counted as errors.
+    BER = (mismatched_bits + missing_bits) / max(len_original, len_extracted)
     """
+    max_len = max(len(original_bits), len(extracted_bits))
+    if max_len == 0:
+        return 0.0  # Both empty → no errors
     min_len = min(len(original_bits), len(extracted_bits))
     if min_len == 0:
-        return 1.0
-    errors = np.sum(original_bits[:min_len] != extracted_bits[:min_len])
-    return float(errors / min_len)
+        return 1.0  # One is empty, all bits are errors
+    errors = int(np.sum(original_bits[:min_len] != extracted_bits[:min_len]))
+    # Missing bits count as errors
+    errors += abs(len(original_bits) - len(extracted_bits))
+    return float(errors / max_len)
 
 
 def compute_bpp(total_embedded_bits: int, image_shape: Tuple[int, ...]) -> float:

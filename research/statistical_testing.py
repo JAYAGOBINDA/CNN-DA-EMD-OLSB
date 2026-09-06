@@ -116,8 +116,11 @@ def run_statistical_experiment(
             "Upload more images."
         )
         return result
-    if k < 2:
-        result["warning"] = "Select at least 2 models."
+    if k < 3:
+        result["warning"] = (
+            f"The Friedman test requires at least 3 models to compare (got {k}). "
+            "Please select at least 3 models."
+        )
         return result
 
     # ── Friedman Test ─────────────────────────────────────────────────────────
@@ -139,8 +142,11 @@ def run_statistical_experiment(
     }
 
     # ── Average ranks ─────────────────────────────────────────────────────────
-    # Lower rank = better for MSE/BER; higher rank = better for PSNR/SSIM.
-    ascending = metric in ("MSE", "BER")
+    # Metric direction:
+    # Lower values are better for MSE, BER, runtime, etc. (rank 1 = lowest).
+    # Higher values are better for PSNR, SSIM, wPSNR, BPP, etc. (rank 1 = highest).
+    # In both cases, rank 1 represents the best performance.
+    ascending = metric.upper() in ("MSE", "BER", "RUNTIME", "TIME", "EMBED_TIME", "EXTRACT_TIME")
     ranks = clean.rank(axis=1, ascending=ascending)
     avg_ranks = ranks.mean()
     result["ranks_df"] = pd.DataFrame({
@@ -152,18 +158,18 @@ def run_statistical_experiment(
     W = float(stat) / (n * (k - 1))
     result["effect_size"] = round(max(0.0, min(1.0, W)), 4)
 
-    # ── Nemenyi Post-Hoc ──────────────────────────────────────────────────────
+    # ── Bonferroni-Dunn / Nemenyi Post-Hoc ───────────────────────────────────
     if significant:
-        result["nemenyi_result"] = _nemenyi_posthoc(
+        result["nemenyi_result"] = _bonferroni_dunn_posthoc(
             model_names, avg_ranks, n, k, alpha
         )
 
     return result
 
 
-# ── Nemenyi post-hoc (Dunn's z-based critical difference) ────────────────────
+# ── Bonferroni-Dunn post-hoc (conservative Nemenyi approximation) ────────────
 
-def _nemenyi_posthoc(
+def _bonferroni_dunn_posthoc(
     model_names: List[str],
     avg_ranks: "pd.Series",
     n: int,
@@ -171,12 +177,12 @@ def _nemenyi_posthoc(
     alpha: float,
 ) -> pd.DataFrame:
     """
-    Nemenyi pairwise post-hoc test.
+    Bonferroni-Dunn pairwise post-hoc test (conservative Nemenyi approximation).
 
     Critical Difference:
         CD = q_α · √(k(k+1) / (6n))
-    where q_α is the Studentized range statistic approximated via Bonferroni-
-    corrected normal quantile (conservative, standard in literature).
+    where q_α is the critical value approximated via Bonferroni-
+    corrected normal quantile (conservative Bonferroni-Dunn procedure).
     """
     q_alpha = norm.ppf(1.0 - alpha / (k * (k - 1)))  # two-sided Bonferroni
     CD = q_alpha * np.sqrt(k * (k + 1) / (6.0 * n))
@@ -192,9 +198,13 @@ def _nemenyi_posthoc(
                 "Model B":              m2,
                 "|Avg Rank Diff|":      round(diff, 4),
                 f"Critical Diff (CD)":  round(float(CD), 4),
-                "Significant?":         "✅ Yes" if sig else "❌ No",
+                "Significant?":         "Yes" if sig else "No",
+                "Method":               "Bonferroni-Dunn (Nemenyi approx.)",
             })
     return pd.DataFrame(rows)
+
+
+_nemenyi_posthoc = _bonferroni_dunn_posthoc  # alias for backwards compatibility
 
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
@@ -212,7 +222,7 @@ def generate_statistical_figures(result: Dict[str, Any]) -> List[plt.Figure]:
         ]
         bars = ax.barh(ranks_df["Model"], ranks_df["Average Rank"],
                        color=colors, height=0.55)
-        ax.set_xlabel("Average Rank (lower = better for PSNR/SSIM)", fontsize=10)
+        ax.set_xlabel("Average Rank (lower rank = better performance)", fontsize=10)
         ax.set_title(
             f"Average Ranks — Friedman Test ({result['metric']})",
             fontsize=11, fontweight="bold",

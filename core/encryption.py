@@ -28,9 +28,17 @@ def derive_key(password: str, salt: bytes, iterations: int = 100_000) -> bytes:
     return kdf.derive(password_bytes)
 
 
-def encrypt_payload(data: bytes, password: str) -> Tuple[bytes, bytes, bytes]:
+def encrypt_payload(data: bytes, password: str, associated_data: bytes = None) -> Tuple[bytes, bytes, bytes]:
     """
     Encrypts arbitrary byte payload using AES-256-GCM.
+
+    Args:
+        data: Plaintext bytes to encrypt.
+        password: User password for key derivation.
+        associated_data: Optional Additional Authenticated Data (AAD).
+            If provided, this data is authenticated by the GCM tag but NOT
+            encrypted. Used to bind recovery side information to the ciphertext
+            so that tampering with either is detected.
 
     Returns:
         salt (16 bytes), nonce (12 bytes), ciphertext (includes GCM authentication tag)
@@ -40,15 +48,17 @@ def encrypt_payload(data: bytes, password: str) -> Tuple[bytes, bytes, bytes]:
     key = derive_key(password, salt)
     
     aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(nonce, data, associated_data=None)
+    ciphertext = aesgcm.encrypt(nonce, data, associated_data=associated_data)
     
     return salt, nonce, ciphertext
 
 
-def decrypt_payload(ciphertext: bytes, password: str, salt: bytes, nonce: bytes) -> bytes:
+def decrypt_payload(ciphertext: bytes, password: str, salt: bytes, nonce: bytes,
+                    associated_data: bytes = None) -> bytes:
     """
-    Decrypts AES-256-GCM ciphertext. Raises InvalidTag if password is incorrect or data tampered.
+    Decrypts AES-256-GCM ciphertext. Raises InvalidTag if password is incorrect,
+    data tampered, or associated_data does not match what was used during encryption.
     """
     key = derive_key(password, salt)
     aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
+    return aesgcm.decrypt(nonce, ciphertext, associated_data=associated_data)

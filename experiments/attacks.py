@@ -100,31 +100,32 @@ def run_attack_suite(
 
 
 def evaluate_attack_robustness(
-    clean_stego_s1: np.ndarray,
-    attacked_stego_s1: np.ndarray,
+    clean_stego: np.ndarray,
+    attacked_stego: np.ndarray,
     clean_stego_s2: np.ndarray = None,
     password: str = "Pass123!",
+    original_payload: bytes = None,
     alpha: float = 0.5,
     beta: float = 0.5,
+    gamma: float = 0.6,
     t1: float = 0.33,
     t2: float = 0.66
 ) -> Dict[str, Any]:
     """
-    Evaluates robustness under attack for CNN-DA-EMD-OLSB (dual-stego).
-
-    For dual-stego: S1 is attacked, S2 remains clean. Extraction uses
-    (attacked_S1, clean_S2) tuple.
+    Evaluates robustness under attack for CNN-DA-EMD-OLSB (single-stego).
 
     Args:
-        clean_stego_s1:    Original S1 before attack.
-        attacked_stego_s1: S1 after attack.
-        clean_stego_s2:    Original S2 (clean, not attacked). If None, falls
-                           back to single-image extraction attempt.
+        clean_stego:       Original stego image before attack.
+        attacked_stego:    Stego image after attack.
+        clean_stego_s2:    Legacy parameter for backward compatibility.
         password:          Decryption password.
+        original_payload:  Ground truth payload bytes for genuine BER comparison.
 
     Returns:
         Dict with PSNR, SSIM, BER, Bit Recovery Accuracy, GCM status.
     """
+    clean_stego_s1 = clean_stego
+    attacked_stego_s1 = attacked_stego
     psnr_val = calculate_psnr(clean_stego_s1, attacked_stego_s1)
     ssim_val = calculate_ssim(clean_stego_s1, attacked_stego_s1)
 
@@ -137,24 +138,38 @@ def evaluate_attack_robustness(
     try:
         from core.cnn_da_emd_olsb import extract_cnn_da_emd_olsb
 
-        if clean_stego_s2 is not None:
-            # Dual-stego extraction: attacked S1 + clean S2
-            stego_input = (attacked_stego_s1, clean_stego_s2)
-        else:
-            # Fallback: try with attacked image as both S1 and S2 (won't recover cover, but may extract payload)
-            stego_input = (attacked_stego_s1, attacked_stego_s1)
+        # Single-stego extraction from attacked image
+        stego_input = attacked_stego_s1
 
         extracted_payload, rec_cov, meta = extract_cnn_da_emd_olsb(
-            stego_input, password, alpha=alpha, beta=beta, t1=t1, t2=t2
+            stego_input=stego_input, password=password, alpha=alpha, beta=beta, gamma=gamma, t1=t1, t2=t2
         )
         if meta.get('crc_match', False):
             gcm_status = "PASSED (100% Bit-Exact Recovery)"
             ber = 0.0
             bit_recovery_acc = 100.0
-        else:
+        elif original_payload is not None and extracted_payload is not None:
             gcm_status = "PARTIAL (Decrypted but CRC mismatch)"
-            ber = 0.5  # Approximate
-            bit_recovery_acc = 50.0
+            orig_arr = np.frombuffer(original_payload, dtype=np.uint8)
+            extr_arr = np.frombuffer(extracted_payload, dtype=np.uint8)
+            min_l = min(len(orig_arr), len(extr_arr))
+            max_l = max(len(orig_arr), len(extr_arr))
+            if min_l > 0:
+                orig_bits = np.unpackbits(orig_arr)
+                extr_bits = np.unpackbits(extr_arr)
+                min_b = min(len(orig_bits), len(extr_bits))
+                max_b = max(len(orig_bits), len(extr_bits))
+                bit_errors = int(np.sum(orig_bits[:min_b] != extr_bits[:min_b]))
+                bit_errors += abs(len(orig_bits) - len(extr_bits))
+                ber = float(bit_errors / max_b) if max_b > 0 else 1.0
+                bit_recovery_acc = float((1.0 - ber) * 100.0)
+            else:
+                ber = 1.0
+                bit_recovery_acc = 0.0
+        else:
+            gcm_status = "PARTIAL (Decrypted with bit errors, CRC mismatch)"
+            ber = 1.0
+            bit_recovery_acc = 0.0
     except Exception:
         pass
 
