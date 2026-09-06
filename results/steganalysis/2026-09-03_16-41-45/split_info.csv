@@ -1,0 +1,2 @@
+total_image_pairs,train_pairs,val_pairs,test_pairs,train_ratio_actual,val_ratio_actual,test_ratio_actual,split_method,patch_size,patch_stride,n_epochs,batch_size,train_patches,val_patches,test_patches
+5,3,0,2,0.6,0.0,0.4,Split by original cover image index — no data leakage,64,32,15,32,1350,0,900
