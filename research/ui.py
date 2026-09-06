@@ -42,6 +42,7 @@ from research.steganalysis import (
     run_steganalysis,
     save_steganalysis_results,
     get_steganalysis_zip,
+    pair_cover_and_stego,
 )
 
 # ── Shared styling helpers ────────────────────────────────────────────────────
@@ -630,236 +631,415 @@ def _tab_security_analysis():
 def _tab_steganalysis():
     st.markdown("""
     <div class="research-card">
-        <h4>🕵️ Steganalysis — Cover vs Stego Binary Classification</h4>
-        <p>Trains a <b>SRM-inspired CNN</b> (PyTorch) to classify 64×64 image patches as
-        cover (class 0) or stego (class 1).
-        <b>Data leakage prevention</b>: each original cover image and its stego counterpart
-        are always placed in the <b>same</b> split (train / val / test).</p>
+        <h4>🕵️ Steganalysis — Cover vs. Stego Binary Classification</h4>
+        <p>Evaluates whether a dedicated deep-learning classifier can distinguish between original <b>Cover images</b>
+        and their corresponding <b>Stego images</b> generated via <b>CNN-DA-EMD-OLSB</b>.<br>
+        <b>Strict Zero Data Leakage:</b> Dataset splitting is executed strictly by <b>Image Pair</b>.
+        A cover image and its corresponding stego counterpart are NEVER separated into different splits.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Configuration ─────────────────────────────────────────────────────────
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        cover_files = st.file_uploader(
-            "Upload Cover Images (≥ 3 recommended):",
-            type=["png","jpg","jpeg","bmp"],
-            accept_multiple_files=True, key="sa_covers"
-        )
-        password = st.text_input("Embedding Password:", value="Pass123!",
-                                 type="password", key="sa_pass")
-        payload_bpp = st.slider("Payload BPP for stego generation:", 0.01, 0.1, 0.05, 0.005,
-                                key="sa_bpp")
-    with col2:
-        n_epochs   = st.slider("Training Epochs:", 5, 30, 15, 1, key="sa_epochs")
-        batch_size = st.selectbox("Batch Size:", [16, 32, 64], index=1, key="sa_batch")
-        st.markdown("**Split Configuration (by image):**")
-        train_r = st.slider("Train ratio:", 0.5, 0.8, 0.70, 0.05, key="sa_train_r")
-        val_r   = st.slider("Val ratio:",   0.0, 0.3, 0.15, 0.05, key="sa_val_r")
-        test_r  = max(0.0, 1.0 - train_r - val_r)
-        st.caption(f"Test ratio: {test_r:.2f}")
+    # ── Workflow Mode Selection ───────────────────────────────────────────────
+    mode = st.radio(
+        "Workflow Mode:",
+        [
+            "● Use Existing Cover + Stego Pairs (Recommended)",
+            "○ Generate Stego from Cover (Optional Secondary Mode)",
+        ],
+        index=0,
+        key="sa_workflow_mode",
+    )
 
-    # ── Workflow status ───────────────────────────────────────────────────────
-    dataset_ready = "sa_covers_data" in st.session_state
-    n_pairs = sum(1 for s in st.session_state.get("sa_stegos_data", []) if s is not None) if dataset_ready else 0
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PRIMARY WORKFLOW: USE EXISTING COVER + STEGO PAIRS
+    # ═══════════════════════════════════════════════════════════════════════════
+    if "Existing" in mode:
+        st.markdown("### 📁 Input Data: Cover & Stego Pairs")
+        c_col1, c_col2 = st.columns(2)
 
+        with c_col1:
+            st.markdown("#### **STEP 1:** 📁 Upload Cover Images")
+            cover_files = st.file_uploader(
+                "Select original Cover images:",
+                type=["png", "jpg", "jpeg", "bmp"],
+                accept_multiple_files=True,
+                key="sa_direct_covers",
+            )
+
+        with c_col2:
+            st.markdown("#### **STEP 2:** 📁 Upload Corresponding Stego Images")
+            stego_files = st.file_uploader(
+                "Select corresponding Stego images (e.g. image_stego.png):",
+                type=["png", "jpg", "jpeg", "bmp"],
+                accept_multiple_files=True,
+                key="sa_direct_stegos",
+            )
+
+        # ── STEP 3: Validate & Pair Images ────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### **STEP 3:** 🔗 Validate & Pair Images")
+
+        paired_data = []
+        is_pairing_ready = False
+
+        if cover_files and stego_files:
+            cov_imgs, cov_names = _load_uploaded_images(cover_files)
+            stg_imgs, stg_names = _load_uploaded_images(stego_files)
+
+            pairing_res = pair_cover_and_stego(cov_imgs, cov_names, stg_imgs, stg_names)
+            paired_data = pairing_res["pairs"]
+            is_pairing_ready = pairing_res["is_valid"]
+
+            # Display pair count summary
+            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+            p_col1.metric("Cover Images", pairing_res["n_covers"])
+            p_col2.metric("Stego Images", pairing_res["n_stegos"])
+            p_col3.metric("Valid Matched Pairs", pairing_res["n_pairs"])
+            status_text = "✅ Ready" if is_pairing_ready else "❌ Need ≥ 2 Pairs"
+            p_col4.metric("Pairing Status", status_text)
+
+            if pairing_res.get("warning"):
+                st.warning(pairing_res["warning"])
+
+            if pairing_res.get("mismatches"):
+                for mm in pairing_res["mismatches"]:
+                    st.error(f"⚠️ {mm}")
+
+            # Expandable inspection table
+            if paired_data:
+                with st.expander(f"🔍 Inspect Matched Image Pairs ({len(paired_data)} pairs)", expanded=False):
+                    table_rows = []
+                    for p in paired_data:
+                        table_rows.append({
+                            "Pair ID": p["pair_id"],
+                            "Cover Image": p["cover_name"],
+                            "Stego Image": p["stego_name"],
+                            "Dimensions (H×W×C)": f"{p['shape'][0]}×{p['shape'][1]}×{p['shape'][2]}",
+                            "Match Strategy": p["match_type"],
+                        })
+                    st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
+        else:
+            st.info("Upload both Cover images (Step 1) and Stego images (Step 2) above to automatically pair them.")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # OPTIONAL SECONDARY WORKFLOW: GENERATE STEGO FROM COVER
+    # ═══════════════════════════════════════════════════════════════════════════
+    else:
+        st.markdown("### 🔧 Secondary Workflow: Generate Stego from Covers")
+        g_col1, g_col2 = st.columns(2)
+        with g_col1:
+            cover_files_gen = st.file_uploader(
+                "Upload Cover Images for Embedding:",
+                type=["png", "jpg", "jpeg", "bmp"],
+                accept_multiple_files=True,
+                key="sa_gen_covers",
+            )
+            pwd_gen = st.text_input("Embedding Password:", value="Pass123!", type="password", key="sa_gen_pwd")
+        with g_col2:
+            payload_bpp_gen = st.slider("Payload BPP:", 0.01, 0.10, 0.05, 0.005, key="sa_gen_bpp")
+            gen_now = st.button("🚀 Embed & Generate Stego Dataset", type="secondary", key="sa_gen_btn")
+
+        if gen_now:
+            if not cover_files_gen:
+                st.error("Please upload cover images first.")
+            else:
+                c_imgs, c_names = _load_uploaded_images(cover_files_gen)
+                prog_bar = st.progress(0)
+                prog_text = st.empty()
+                cb = _progress_factory(prog_bar, prog_text)
+                with st.spinner("Generating Stego images using CNN-DA-EMD-OLSB..."):
+                    c_out, s_out, n_out = generate_stego_dataset(
+                        cover_images=c_imgs, cover_names=c_names,
+                        password=pwd_gen, payload_bpp=payload_bpp_gen,
+                        progress_callback=cb,
+                    )
+                    st.session_state["sa_gen_c"] = c_out
+                    st.session_state["sa_gen_s"] = s_out
+                    st.session_state["sa_gen_n"] = n_out
+                    prog_bar.progress(100)
+                    prog_text.markdown("✅ **Stego dataset generated successfully!**")
+
+        paired_data = []
+        is_pairing_ready = False
+        if "sa_gen_c" in st.session_state:
+            c_list = st.session_state["sa_gen_c"]
+            s_list = st.session_state["sa_gen_s"]
+            n_list = st.session_state["sa_gen_n"]
+            for idx, (c, s, n) in enumerate(zip(c_list, s_list, n_list)):
+                if s is not None:
+                    paired_data.append({
+                        "pair_id": len(paired_data) + 1,
+                        "cover_name": n,
+                        "stego_name": f"{os.path.splitext(n)[0]}_stego.png",
+                        "cover_img": c,
+                        "stego_img": s,
+                        "shape": c.shape,
+                        "match_type": "Auto-generated",
+                    })
+            is_pairing_ready = len(paired_data) >= 2
+            st.success(f"✅ Generated and paired **{len(paired_data)}** valid Cover/Stego pairs.")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 4: CONFIGURE CLASSIFIER
+    # ═══════════════════════════════════════════════════════════════════════════
     st.markdown("---")
+    st.markdown("### **STEP 4:** ⚙️ Configure Steganalysis Classifier")
 
-    # Step indicator
-    st.markdown(f"""
-    <div style="display:flex;gap:2rem;margin-bottom:1rem;flex-wrap:wrap;">
-        <div class="step-row">
-            <span class="step-badge">1</span>
-            <span class="step-text">Generate Stego Dataset</span>
-            &nbsp;
-            <span class="status-pill {'status-ready' if dataset_ready else 'status-pending'}">
-                {'✅ Ready — ' + str(n_pairs) + ' pairs' if dataset_ready else '⏳ Pending'}
-            </span>
-        </div>
-        <div class="step-row">
-            <span class="step-badge">2</span>
-            <span class="step-text">Train & Evaluate CNN</span>
-            &nbsp;
-            <span class="status-pill {'status-ready' if 'sa_result' in st.session_state else 'status-pending'}">
-                {'✅ Complete' if 'sa_result' in st.session_state else '⏳ Pending'}
-            </span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    cfg_col1, cfg_col2 = st.columns(2)
+    with cfg_col1:
+        n_epochs = st.slider("Training Epochs:", min_value=5, max_value=50, value=15, step=1, key="sa_epochs_cfg")
+        batch_size = st.selectbox("Batch Size:", [16, 32, 64], index=1, key="sa_batch_cfg")
+        lr_val = st.selectbox(
+            "Learning Rate (AdamW):",
+            [0.0001, 0.0005, 0.001, 0.002],
+            index=1,
+            key="sa_lr_cfg",
+        )
 
-    # ── Buttons ───────────────────────────────────────────────────────────────
-    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
-    with btn_col1:
-        auto_btn = st.button("🚀 Generate & Train (Full Pipeline)", type="primary", key="sa_auto")
-    with btn_col2:
-        gen_btn = st.button("🔧 Step 1: Generate Stego Only", key="sa_gen")
-    with btn_col3:
-        train_btn = st.button("🧠 Step 2: Train & Evaluate", key="sa_train",
-                              disabled=not dataset_ready)
+    with cfg_col2:
+        st.markdown("**Dataset Split (Enforced Strictly by Image Pair):**")
+        train_r = st.slider("Training Pairs Ratio:", 0.50, 0.85, 0.70, 0.05, key="sa_train_r_cfg")
+        val_r = st.slider("Validation Pairs Ratio:", 0.00, 0.30, 0.15, 0.05, key="sa_val_r_cfg")
+        test_r = max(0.0, 1.0 - train_r - val_r)
 
-    # ── Stego generation (used by both auto and gen_btn) ──────────────────────
-    def _do_generate():
-        if not cover_files:
-            st.error("Upload cover images first.")
-            return False
-        covers, c_names = _load_uploaded_images(cover_files)
-        if not covers:
-            st.error("No valid images loaded.")
-            return False
+        # Dynamic preview of pair counts
+        if paired_data:
+            n_tot = len(paired_data)
+            n_tr = max(1, int(round(n_tot * train_r)))
+            n_va = max(1, int(round(n_tot * val_r))) if n_tot >= 3 and val_r > 0 else 0
+            n_te = max(1, n_tot - n_tr - n_va)
+            st.caption(
+                f"📊 **Split Preview:** Total: **{n_tot}** pairs → "
+                f"Train: **{n_tr}** pairs | Val: **{n_va}** pairs | Unseen Test: **{n_te}** pairs"
+            )
+            st.caption("🔒 *Zero Data Leakage: Cover and Stego from the same pair never appear in different splits.*")
+        else:
+            st.caption(f"Test Pairs Ratio: **{test_r:.2f}**")
 
-        prog_bar  = st.progress(0)
-        prog_text = st.empty()
-        cb = _progress_factory(prog_bar, prog_text)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 5: TRAIN & EVALUATE
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### **STEP 5:** 🧠 Train & Evaluate Steganalysis Classifier")
 
-        with st.spinner("Embedding payloads to create stego dataset …"):
-            try:
-                cov_out, stg_out, nm_out = generate_stego_dataset(
-                    cover_images=covers, cover_names=c_names,
-                    password=password, payload_bpp=payload_bpp,
-                    progress_callback=cb,
-                )
-                n_ok = sum(1 for s in stg_out if s is not None)
-                st.session_state["sa_covers_data"] = cov_out
-                st.session_state["sa_stegos_data"] = stg_out
-                st.session_state["sa_names_data"]  = nm_out
-                prog_bar.progress(100)
-                prog_text.markdown(
-                    f"✅ **Generated stego for {n_ok}/{len(covers)} images.**  "
-                    f"{len(covers)-n_ok} failed (payload too large for image)."
-                )
-                return n_ok >= 2
-            except Exception as exc:
-                st.error(f"Stego generation failed: {exc}")
-                import traceback; st.code(traceback.format_exc())
-                return False
+    train_btn = st.button(
+        "🧠 Train & Evaluate Classifier",
+        type="primary",
+        key="sa_exec_train_btn",
+        disabled=not is_pairing_ready,
+    )
 
-    def _do_train():
-        if "sa_covers_data" not in st.session_state:
-            st.error("Generate the stego dataset first (Step 1).")
-            return
+    if train_btn:
+        if not paired_data or len(paired_data) < 2:
+            st.error("At least 2 valid Cover-Stego pairs are required before training.")
+        else:
+            prog_bar = st.progress(0)
+            prog_text = st.empty()
+            cb = _progress_factory(prog_bar, prog_text)
 
-        prog_bar  = st.progress(0)
-        prog_text = st.empty()
-        cb = _progress_factory(prog_bar, prog_text)
+            with st.spinner("Executing SRM-CNN Steganalysis Training & Evaluation..."):
+                try:
+                    sa_res = run_steganalysis(
+                        paired_data=paired_data,
+                        train_ratio=train_r,
+                        val_ratio=val_r,
+                        n_epochs=n_epochs,
+                        batch_size=batch_size,
+                        lr=lr_val,
+                        progress_callback=cb,
+                    )
 
-        with st.spinner("Training steganalysis CNN … (this may take several minutes)"):
-            try:
-                sa_result = run_steganalysis(
-                    cover_images=st.session_state["sa_covers_data"],
-                    stego_images=st.session_state["sa_stegos_data"],
-                    cover_names=st.session_state["sa_names_data"],
-                    train_ratio=train_r,
-                    val_ratio=val_r,
-                    n_epochs=n_epochs,
-                    batch_size=batch_size,
-                    progress_callback=cb,
-                )
-                if "error" in sa_result:
-                    st.error(sa_result["error"])
+                    if "error" in sa_res:
+                        st.error(sa_res["error"])
+                        return
+
+                    out_dir = save_steganalysis_results(sa_res)
+                    st.session_state["sa_result"] = sa_res
+                    st.session_state["sa_zip"] = get_steganalysis_zip(sa_res)
+                    st.session_state["sa_out_dir"] = out_dir
+
+                    prog_bar.progress(100)
+                    prog_text.markdown("✅ **Steganalysis training and test evaluation complete!**")
+                except Exception as exc:
+                    st.error(f"Execution failed: {exc}")
+                    import traceback
+                    st.code(traceback.format_exc())
                     return
 
-                out_dir = save_steganalysis_results(sa_result)
-                st.session_state["sa_result"]  = sa_result
-                st.session_state["sa_zip"]     = get_steganalysis_zip(sa_result)
-                st.session_state["sa_out_dir"] = out_dir
-                prog_bar.progress(100)
-                prog_text.markdown("✅ **Steganalysis classifier trained and evaluated!**")
-            except Exception as exc:
-                st.error(f"Training failed: {exc}")
-                import traceback; st.code(traceback.format_exc())
-
-    # ── Execute workflow ──────────────────────────────────────────────────────
-    if auto_btn:
-        ok = _do_generate()
-        if ok:
-            _do_train()
-
-    if gen_btn and not auto_btn:
-        _do_generate()
-
-    if train_btn and not auto_btn:
-        _do_train()
-
-    # ── Dataset preview ───────────────────────────────────────────────────────
-    if "sa_covers_data" in st.session_state:
-        n_pairs_now = sum(1 for s in st.session_state["sa_stegos_data"] if s is not None)
-        st.success(f"✅ Stego dataset ready: **{n_pairs_now}** valid image pairs.")
-
-        with st.expander("🔍 Preview stego sample"):
-            cov_list = st.session_state["sa_covers_data"]
-            stg_list = st.session_state["sa_stegos_data"]
-            nm_list  = st.session_state["sa_names_data"]
-            valid_pairs = [(c,s,n) for c,s,n in zip(cov_list,stg_list,nm_list) if s is not None]
-            if valid_pairs:
-                c_ex, s_ex, n_ex = valid_pairs[0]
-                pc1, pc2 = st.columns(2)
-                pc1.image(c_ex, caption=f"Cover: {n_ex}", use_container_width=True)
-                pc2.image(s_ex, caption=f"Stego S1: {n_ex}", use_container_width=True)
-
-    # ── Results display ───────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 6: VIEW RESULTS
+    # ═══════════════════════════════════════════════════════════════════════════
     if "sa_result" in st.session_state:
+        st.markdown("---")
+        st.markdown("### **STEP 6:** 📊 Steganalysis Results Dashboard")
         res = st.session_state["sa_result"]
+        metrics = res["metrics"]
+        split_info = res["split_info"]
 
-        # Split info
-        if "split_info" in res:
-            si = res["split_info"]
-            st.markdown("#### 📋 Dataset Split")
-            sc1, sc2, sc3, sc4 = st.columns(4)
-            sc1.metric("Train Pairs",   si.get("train_pairs", "?"))
-            sc2.metric("Val Pairs",     si.get("val_pairs",   "?"))
-            sc3.metric("Test Pairs",    si.get("test_pairs",  "?"))
-            sc4.metric("Train Patches", si.get("train_patches","?"))
-            st.caption(f"**Split method:** {si.get('split_method','')}")
+        # ── COLLAPSE DETECTION WARNING BANNER ─────────────────────────────────
+        if metrics.get("is_collapsed"):
+            st.error(f"""
+            ### ⚠️ Classifier Collapse Detected
+            {metrics.get('collapse_warning')}
+            """)
+        else:
+            st.success("✅ **Balanced Prediction:** The classifier predicted both Cover and Stego classes appropriately.")
 
-        # Metrics
-        if "metrics" in res:
-            st.markdown("#### 🎯 Test Set Evaluation Metrics")
-            m = res["metrics"]
-            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-            mc1.metric("Accuracy",  m.get("accuracy",  "?"))
-            mc2.metric("Precision", m.get("precision", "?"))
-            mc3.metric("Recall",    m.get("recall",    "?"))
-            mc4.metric("F1-Score",  m.get("f1_score",  "?"))
-            mc5.metric("ROC-AUC",   m.get("roc_auc",   "?"))
-            st.caption(f"Classifier: {m.get('classifier','')} | Device: {m.get('device','')}")
+        # ── CLASS DISTRIBUTION COMPARISON ─────────────────────────────────────
+        st.markdown("#### ⚖️ Test Set Class Distribution: Actual vs. Predicted")
+        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+        d_col1.metric("Actual Cover Patches", metrics["actual_cover_count"])
+        d_col2.metric("Actual Stego Patches", metrics["actual_stego_count"])
+        d_col3.metric("Predicted Cover Patches", metrics["pred_cover_count"])
+        d_col4.metric("Predicted Stego Patches", metrics["pred_stego_count"])
 
+        # ── TOP LEVEL TEST PERFORMANCE METRICS ────────────────────────────────
+        st.markdown("#### 🎯 Unseen Test Set Metrics")
+        m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+        m_col1.metric("Accuracy", f"{metrics['accuracy']:.4f}")
+        m_col2.metric("Precision", f"{metrics['precision']:.4f}")
+        m_col3.metric("Recall (Sensitivity)", f"{metrics['recall']:.4f}")
+        m_col4.metric("F1-Score", f"{metrics['f1_score']:.4f}")
+        m_col5.metric("ROC-AUC", f"{metrics['roc_auc']}")
+        st.caption(f"Target for undetectable stego: **Accuracy ≈ 0.5000**, **ROC-AUC ≈ 0.5000** (Random Guess). Model: `{metrics['classifier']}`")
+
+        # ── VISUALIZATIONS ────────────────────────────────────────────────────
         fig_col1, fig_col2 = st.columns(2)
-        if res.get("confusion_matrix_figure"):
-            fig_col1.markdown("#### 📊 Confusion Matrix")
-            fig_col1.pyplot(res["confusion_matrix_figure"])
-        if res.get("roc_curve_figure"):
-            fig_col2.markdown("#### 📈 ROC Curve")
-            fig_col2.pyplot(res["roc_curve_figure"])
+        with fig_col1:
+            if res.get("confusion_matrix_figure"):
+                st.markdown("#### 📊 Confusion Matrix (Test Set)")
+                st.pyplot(res["confusion_matrix_figure"])
+
+        with fig_col2:
+            if res.get("roc_curve_figure"):
+                st.markdown("#### 📈 ROC Curve (Test Set)")
+                st.pyplot(res["roc_curve_figure"])
 
         if res.get("training_history_figure"):
-            st.markdown("#### 📉 Training History")
+            st.markdown("#### 📉 Training & Validation Learning Curves")
             st.pyplot(res["training_history_figure"])
 
-        if "training_history" in res and not res["training_history"].empty:
-            with st.expander("📋 Training history table"):
-                st.dataframe(res["training_history"], use_container_width=True)
+        # ── DIAGNOSTIC EXPANDERS ──────────────────────────────────────────────
+        with st.expander("📋 Image-Level Test Predictions Table", expanded=False):
+            if "predictions_df" in res and not res["predictions_df"].empty:
+                st.dataframe(res["predictions_df"], use_container_width=True)
+            else:
+                st.info("No test predictions available.")
 
-        # Downloads
-        st.markdown("#### 💾 Download Steganalysis Results")
-        d1, d2, d3 = st.columns(3)
-        if "metrics" in res:
-            import pandas as pd
-            d1.download_button("📥 Metrics CSV",
-                               data=pd.DataFrame([res["metrics"]]).to_csv(index=False).encode(),
-                               file_name="steganalysis_metrics.csv", mime="text/csv",
-                               key="dl_sa_metrics")
-        if res.get("confusion_matrix_figure"):
-            d2.download_button("📥 Confusion Matrix PNG",
-                               data=_fig_to_bytes(res["confusion_matrix_figure"]),
-                               file_name="confusion_matrix.png", mime="image/png",
-                               key="dl_sa_cm")
+        with st.expander("🔬 Diagnostic Confusion Matrices (Train / Validation)", expanded=False):
+            diag_c1, diag_c2 = st.columns(2)
+            with diag_c1:
+                if res.get("confusion_matrix_train") is not None:
+                    st.markdown("**Training Set Confusion Matrix:**")
+                    st.write(res["confusion_matrix_train"])
+            with diag_c2:
+                if res.get("confusion_matrix_val") is not None:
+                    st.markdown("**Validation Set Confusion Matrix:**")
+                    st.write(res["confusion_matrix_val"])
+                else:
+                    st.info("Validation set was 0 pairs (small dataset).")
+
+        with st.expander("📄 Full Markdown Research Report Preview", expanded=False):
+            st.markdown(res.get("report_md", "No report generated."))
+
+        # ── SCIENTIFIC RESEARCH INTERPRETATION ────────────────────────────────
+        st.markdown("#### 📝 Scientific Interpretation")
+        acc_score = metrics["accuracy"]
+        if metrics.get("is_collapsed"):
+            st.info(
+                "**Interpretation:** The classifier predicted all samples as a single class. "
+                "This indicates an optimization collapse under the current sample size or learning rate. "
+                "The result is inconclusive and should not be cited as empirical evidence for or against detectability."
+            )
+        elif acc_score > 0.65:
+            st.info(
+                f"**Interpretation:** The classifier achieved an accuracy of **{acc_score*100:.1f}%**, substantially "
+                "above chance level (50%) on the unseen test set. This indicates that the CNN-DA-EMD-OLSB stego images "
+                "contain detectable statistical artifacts that allow spatial steganalysis models to distinguish them from clean covers."
+            )
+        else:
+            st.info(
+                f"**Interpretation:** The classifier achieved an accuracy of **{acc_score*100:.1f}%**, performing close "
+                "to chance level (50%) while predicting both classes. Under this specific classifier architecture, patch size, "
+                "and dataset, the stego images exhibited low detectability. *(Note: 50% accuracy under one classifier does not prove universal security against all conceivable steganalysis techniques).*"
+            )
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 7: DOWNLOAD RESULTS
+        # ═══════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("### **STEP 7:** ⬇️ Download Experiment Artifacts")
+
+        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+
+        # Metrics CSV
+        d_col1.download_button(
+            "📥 Metrics CSV",
+            data=pd.DataFrame([metrics]).to_csv(index=False).encode("utf-8"),
+            file_name="metrics.csv",
+            mime="text/csv",
+            key="dl_sa_metrics_csv",
+        )
+
+        # Predictions CSV
+        if "predictions_df" in res and not res["predictions_df"].empty:
+            d_col2.download_button(
+                "📥 Predictions CSV",
+                data=res["predictions_df"].to_csv(index=False).encode("utf-8"),
+                file_name="predictions.csv",
+                mime="text/csv",
+                key="dl_sa_preds_csv",
+            )
+
+        # Full Report MD
+        if "report_md" in res:
+            d_col3.download_button(
+                "📥 Full Report (MD)",
+                data=res["report_md"].encode("utf-8"),
+                file_name="report.md",
+                mime="text/markdown",
+                key="dl_sa_report_md",
+            )
+
+        # ZIP Package
         if "sa_zip" in st.session_state:
-            d3.download_button("📦 Download All (ZIP)",
-                               data=st.session_state["sa_zip"],
-                               file_name="steganalysis_results.zip",
-                               mime="application/zip", key="dl_sa_zip")
+            d_col4.download_button(
+                "📦 Download All (ZIP)",
+                data=st.session_state["sa_zip"],
+                file_name="steganalysis_results.zip",
+                mime="application/zip",
+                key="dl_sa_complete_zip",
+            )
+
+        # Plot downloads
+        pd_col1, pd_col2, pd_col3 = st.columns(3)
+        if res.get("confusion_matrix_figure"):
+            pd_col1.download_button(
+                "📥 Confusion Matrix PNG",
+                data=_fig_to_bytes(res["confusion_matrix_figure"]),
+                file_name="confusion_matrix.png",
+                mime="image/png",
+                key="dl_sa_cm_png",
+            )
+        if res.get("roc_curve_figure"):
+            pd_col2.download_button(
+                "📥 ROC Curve PNG",
+                data=_fig_to_bytes(res["roc_curve_figure"]),
+                file_name="roc_curve.png",
+                mime="image/png",
+                key="dl_sa_roc_png",
+            )
+        if res.get("training_history_figure"):
+            pd_col3.download_button(
+                "📥 Training Curves PNG",
+                data=_fig_to_bytes(res["training_history_figure"]),
+                file_name="training_curves.png",
+                mime="image/png",
+                key="dl_sa_curves_png",
+            )
+
         if "sa_out_dir" in st.session_state:
-            st.caption(f"💾 Saved to: `{st.session_state['sa_out_dir']}`")
+            st.caption(f"💾 Results permanently saved to disk at: `{st.session_state['sa_out_dir']}`")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

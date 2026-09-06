@@ -1,0 +1,2 @@
+accuracy,precision,recall,f1_score,roc_auc,is_collapsed,collapse_warning,actual_cover_count,actual_stego_count,pred_cover_count,pred_stego_count,device,classifier
+0.5,0.5,1.0,0.6667,0.5,True,Classifier collapsed to a single class (Stego (class 1)). All test patches were predicted as the same class. The current result should NOT be interpreted as successful steganalysis.,9,9,0,18,cpu,"SteganalysisNet (SRM-Inspired CNN, PyTorch)"
