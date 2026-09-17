@@ -1,0 +1,6 @@
+epoch,train_loss,train_acc,val_loss,val_acc
+1,1.16222,0.3333,N/A,N/A
+2,0.82794,0.5278,N/A,N/A
+3,0.71924,0.4722,N/A,N/A
+4,0.75243,0.5,N/A,N/A
+5,0.71164,0.4444,N/A,N/A

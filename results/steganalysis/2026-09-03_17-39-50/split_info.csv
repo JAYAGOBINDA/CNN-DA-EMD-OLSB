@@ -1,0 +1,2 @@
+total_pairs,train_pairs,val_pairs,test_pairs,train_ratio_target,val_ratio_target,train_ratio_actual,val_ratio_actual,test_ratio_actual,split_policy,patch_size,patch_stride,n_epochs,batch_size,learning_rate,train_patches,val_patches,test_patches
+3,2,0,1,0.6,0.0,0.667,0.0,0.333,Pair-based splitting: cover and stego remain in identical split.,64,32,5,16,0.001,36,0,18
