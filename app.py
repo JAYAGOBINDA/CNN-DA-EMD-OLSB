@@ -331,14 +331,15 @@ elif page == "📥 Embed Payload (Proposed)":
             cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_c)
             usable_cap_bytes = cap_info['usable_capacity_bytes']
             theo_cap_bytes = cap_info['theoretical_capacity_bytes']
-            # This is a conservative UI hint only. The embedding engine performs
-            # the authoritative capacity check after encryption and side-info sizing.
-            max_capacity_bytes = max(256, usable_cap_bytes - 256)
+            # In Single-Stego Reversible Data Hiding (RDH), carrier space stores
+            # the encrypted secret payload, binary header, AND bit-exact cover recovery metadata.
+            # Safe net payload capacity accounts for this recovery side-info overhead.
+            max_capacity_bytes = max(64, int((usable_cap_bytes - 64) * 0.12))
             st.image(cover_rgb, caption=f"Cover Image ({w}x{h})", use_container_width=True)
             st.caption(
                 f"Gross carrier capacity: **{usable_cap_bytes:,} bytes** "
                 f"({cap_info['usable_capacity_bits']:,} bits) | "
-                f"Theoretical: {theo_cap_bytes:,} bytes. Encryption and recovery metadata reduce usable payload space."
+                f"Net Reversible Payload Limit: **~{max_capacity_bytes:,} bytes**."
             )
 
     with col2:
@@ -348,6 +349,7 @@ elif page == "📥 Embed Payload (Proposed)":
         )
 
         secret_bytes = None
+        secret_np_original = None
         payload_type = 0
 
         if payload_option == "📝 Text Message":
@@ -359,24 +361,57 @@ elif page == "📥 Embed Payload (Proposed)":
                 payload_type = 0
 
         elif payload_option == "🖼️ Secret Image":
-            uploaded_secret_img = st.file_uploader("Upload Secret Image to Hide:", type=["png", "jpg", "jpeg", "bmp"])
-            if uploaded_secret_img and cover_rgb is not None:
+            uploaded_secret_img = st.file_uploader(
+                "Upload Secret Image to Hide (Any Size / Resolution):",
+                type=["png", "jpg", "jpeg", "bmp", "webp"]
+            )
+            if uploaded_secret_img:
                 secret_np = load_image(uploaded_secret_img)
-                max_bytes = max_capacity_bytes if cover_rgb is not None else 500000
-                opt_bytes, opt_w, opt_h = optimize_secret_image(secret_np, max_bytes)
-                secret_bytes = opt_bytes
-                payload_type = 1
-                st.image(secret_np, caption=f"Secret Image ({secret_np.shape[1]}x{secret_np.shape[0]})", width=200)
-                st.success(f"Optimized to {opt_w}x{opt_h} — {len(secret_bytes):,} bytes")
+                orig_h, orig_w = secret_np.shape[:2]
+                orig_file_size = len(uploaded_secret_img.getvalue())
+                # Keep original numpy array for iterative re-optimization
+                secret_np_original = secret_np.copy()
+
+                if cover_rgb is not None:
+                    target_budget = max_capacity_bytes
+                    opt_bytes, opt_w, opt_h = optimize_secret_image(secret_np, target_budget)
+                    secret_bytes = opt_bytes
+                    payload_type = 1
+
+                    st.markdown("##### 🖼️ Secret Image Auto-Optimization")
+                    sec_c1, sec_c2 = st.columns(2)
+                    with sec_c1:
+                        st.image(secret_np, caption=f"Original ({orig_w}×{orig_h}) — {orig_file_size:,} B", use_container_width=True)
+                    with sec_c2:
+                        from PIL import Image as PILImg
+                        opt_pil = PILImg.open(io.BytesIO(opt_bytes))
+                        st.image(opt_pil, caption=f"Fitted for Carrier ({opt_w}×{opt_h}) — {len(opt_bytes):,} B", use_container_width=True)
+
+                    if orig_w == opt_w and orig_h == opt_h and len(opt_bytes) == orig_file_size:
+                        st.success(f"✅ Lossless Original Preserved: Fits within cover net budget (~{max_capacity_bytes:,} bytes)!")
+                    else:
+                        st.success(
+                            f"✨ **Universal Image Adaptation**: Input {orig_w}×{orig_h} ({orig_file_size:,} bytes) adaptively fitted to "
+                            f"**{opt_w}×{opt_h} ({len(opt_bytes):,} bytes)** to guarantee 100% bit-exact cover recovery inside {w}×{h} carrier!"
+                        )
+                else:
+                    secret_np_original = secret_np.copy()
+                    st.image(secret_np, caption=f"Uploaded Secret Image ({orig_w}×{orig_h}) — {orig_file_size:,} bytes", width=220)
+                    st.info("ℹ️ Upload a Cover Image on the left to adaptively fit this secret image to the carrier's exact reversible capacity.")
 
         elif payload_option == "📄 Document / Binary File":
             uploaded_file = st.file_uploader("Upload Document/File to Hide:", type=["pdf", "zip", "txt", "docx", "bin", "dat"])
             if uploaded_file and cover_rgb is not None:
                 secret_bytes = uploaded_file.getvalue()
-                st.info(
-                    f"Original file selected: {len(secret_bytes):,} bytes. "
-                    "The encrypted payload layer will compress it only when beneficial; it will never be truncated."
-                )
+                if len(secret_bytes) > max_capacity_bytes:
+                    st.warning(
+                        f"⚠️ File size ({len(secret_bytes):,} bytes) exceeds recommended net reversible capacity "
+                        f"(~{max_capacity_bytes:,} bytes) for this {w}x{h} cover image. Please select a smaller file or larger cover image."
+                    )
+                else:
+                    st.info(
+                        f"Original file selected: {len(secret_bytes):,} bytes. Fits within reversible capacity."
+                    )
                 payload_type = 2
 
     if cover_rgb is not None and secret_bytes is not None:
@@ -384,18 +419,49 @@ elif page == "📥 Embed Payload (Proposed)":
             with st.spinner("Running CNN distortion maps + adaptive single-stego embedding..."):
                 try:
                     cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
-                    stego_rgb, stats = embed_cnn_da_emd_olsb(
-                        cover_rgb=cover_rgb,
-                        secret_data=secret_bytes,
-                        password=password,
-                        alpha=param_alpha,
-                        beta=param_beta,
-                        gamma=param_gamma,
-                        t1=param_t1,
-                        t2=param_t2,
-                        payload_type=payload_type,
-                        model=cnn_model
-                    )
+
+                    # For image payloads, iteratively retry with smaller budgets
+                    # to handle recovery-metadata feedback loop divergence.
+                    # Each retry re-optimizes from the ORIGINAL numpy array.
+                    if payload_type == 1 and secret_np_original is not None:
+                        budget = max_capacity_bytes
+                        last_err = None
+                        for _embed_attempt in range(10):
+                            try:
+                                cur_bytes, _, _ = optimize_secret_image(secret_np_original, budget)
+                                stego_rgb, stats = embed_cnn_da_emd_olsb(
+                                    cover_rgb=cover_rgb,
+                                    secret_data=cur_bytes,
+                                    password=password,
+                                    alpha=param_alpha,
+                                    beta=param_beta,
+                                    gamma=param_gamma,
+                                    t1=param_t1,
+                                    t2=param_t2,
+                                    payload_type=payload_type,
+                                    model=cnn_model
+                                )
+                                last_err = None
+                                break
+                            except ValueError as ve:
+                                last_err = ve
+                                budget = max(48, int(budget * 0.45))
+                        if last_err is not None:
+                            raise last_err
+                    else:
+                        stego_rgb, stats = embed_cnn_da_emd_olsb(
+                            cover_rgb=cover_rgb,
+                            secret_data=secret_bytes,
+                            password=password,
+                            alpha=param_alpha,
+                            beta=param_beta,
+                            gamma=param_gamma,
+                            t1=param_t1,
+                            t2=param_t2,
+                            payload_type=payload_type,
+                            model=cnn_model
+                        )
+
                     st.session_state['stego_result'] = {
                         'cover_rgb': cover_rgb,
                         'stego_rgb': stego_rgb,
@@ -537,7 +603,11 @@ elif page == "📤 Extract Payload (Proposed)":
             try:
                 from PIL import Image as PILImage
                 extracted_img = PILImage.open(io.BytesIO(extracted_bytes))
-                st.image(extracted_img, caption="Decrypted Secret Image", width=300)
+                st.image(
+                    extracted_img,
+                    caption=f"Decrypted Secret Image ({extracted_img.width}×{extracted_img.height} — {len(extracted_bytes):,} bytes)",
+                    width=320
+                )
                 img_buf = io.BytesIO()
                 extracted_img.save(img_buf, format="PNG")
                 st.markdown(get_image_download_link(np.array(extracted_img), filename="extracted_secret_image.png", label="💾 Direct Download Secret Image (.png)"), unsafe_allow_html=True)

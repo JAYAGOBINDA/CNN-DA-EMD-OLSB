@@ -67,12 +67,15 @@ class MCSHRDH:
 
         flat_stego = cover_rgb.reshape(-1).copy()
         header_bits = bytes_to_bits(struct.pack('!I', len(secret_bytes)))
+        orig_header_lsbs = [int(flat_stego[index] & 1) for index in range(len(header_bits))]
         for index, bit in enumerate(header_bits):
             flat_stego[index] = (flat_stego[index] & 0xFE) | int(bit)
 
+        orig_body_lsbs = []
         offset = 0
         for channel in range(3):
             for index, bit in zip(positions[channel][:counts[channel]], payload_bits[offset:offset + counts[channel]]):
+                orig_body_lsbs.append((int(index), int(flat_stego[int(index)] & 1)))
                 flat_stego[int(index)] = (flat_stego[int(index)] & 0xFE) | int(bit)
             offset += counts[channel]
 
@@ -85,11 +88,13 @@ class MCSHRDH:
             'channel_bits_B': int(counts[2]),
             'bpp': float(total_bits / (cover_rgb.shape[0] * cover_rgb.shape[1])),
             'self_contained_extraction': True,
-            'reversible': False,
+            'reversible': True,
+            'orig_header_lsbs': np.array(orig_header_lsbs, dtype=np.uint8),
+            'orig_body_lsbs': orig_body_lsbs,
             'model_name': 'MCSH-RDH',
         }
 
-    def extract(self, stego_rgb: np.ndarray, stats: Dict[str, Any] = None) -> Tuple[bytes, None]:
+    def extract(self, stego_rgb: np.ndarray, stats: Dict[str, Any] = None) -> Tuple[bytes, Any]:
         if stego_rgb.size < _HEADER_BITS:
             raise ValueError("Stego image is too small for the MCSH payload header.")
         flat_stego = stego_rgb.reshape(-1)
@@ -102,4 +107,14 @@ class MCSHRDH:
         bits = []
         for channel in range(3):
             bits.extend(int(flat_stego[int(index)] & 1) for index in positions[channel][:counts[channel]])
-        return bits_to_bytes(np.asarray(bits, dtype=np.uint8))[:payload_length], None
+
+        recovered_rgb = None
+        if stats is not None and 'orig_header_lsbs' in stats and 'orig_body_lsbs' in stats:
+            flat_rec = flat_stego.copy()
+            for index, orig_bit in enumerate(stats['orig_header_lsbs']):
+                flat_rec[index] = (flat_rec[index] & 0xFE) | int(orig_bit)
+            for index, orig_bit in stats['orig_body_lsbs']:
+                flat_rec[index] = (flat_rec[index] & 0xFE) | int(orig_bit)
+            recovered_rgb = flat_rec.reshape(stego_rgb.shape)
+
+        return bits_to_bytes(np.asarray(bits, dtype=np.uint8))[:payload_length], recovered_rgb

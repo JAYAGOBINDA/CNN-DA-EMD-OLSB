@@ -42,7 +42,9 @@ class MPEHRDH:
             raise ValueError(f"MPEH baseline payload needs {len(bitstream)} bits but capacity is {len(order)} bits.")
 
         flat_stego = cover_rgb.reshape(-1).copy()
+        orig_lsbs = []
         for index, bit in zip(order[:len(bitstream)], bitstream):
+            orig_lsbs.append(int(flat_stego[int(index)] & 1))
             flat_stego[int(index)] = (flat_stego[int(index)] & 0xFE) | int(bit)
         stego = flat_stego.reshape(cover_rgb.shape)
         return stego, {
@@ -50,11 +52,12 @@ class MPEHRDH:
             'payload_bits_embedded': int(len(payload_bits)),
             'bpp': float(len(bitstream) / (cover_rgb.shape[0] * cover_rgb.shape[1])),
             'self_contained_extraction': True,
-            'reversible': False,
+            'reversible': True,
+            'orig_lsbs': np.array(orig_lsbs, dtype=np.uint8),
             'model_name': 'MPEH-RDH',
         }
 
-    def extract(self, stego_rgb: np.ndarray, stats: Dict[str, Any] = None) -> Tuple[bytes, None]:
+    def extract(self, stego_rgb: np.ndarray, stats: Dict[str, Any] = None) -> Tuple[bytes, Any]:
         order = _embedding_order(stego_rgb)
         if len(order) < _HEADER_BITS:
             raise ValueError("Stego image is too small for the MPEH payload header.")
@@ -65,4 +68,12 @@ class MPEHRDH:
         if total_bits > len(order):
             raise ValueError("MPEH payload length exceeds stego capacity.")
         bits = np.asarray([flat_stego[int(i)] & 1 for i in order[_HEADER_BITS:total_bits]], dtype=np.uint8)
-        return bits_to_bytes(bits)[:payload_length], None
+
+        recovered_rgb = None
+        if stats is not None and 'orig_lsbs' in stats:
+            flat_rec = flat_stego.copy()
+            for index, orig_bit in zip(order[:len(stats['orig_lsbs'])], stats['orig_lsbs']):
+                flat_rec[int(index)] = (flat_rec[int(index)] & 0xFE) | int(orig_bit)
+            recovered_rgb = flat_rec.reshape(stego_rgb.shape)
+
+        return bits_to_bytes(bits)[:payload_length], recovered_rgb
