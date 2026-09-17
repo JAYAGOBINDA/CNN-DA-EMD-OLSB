@@ -5,7 +5,8 @@ against Proposed System: CNN-DA-EMD-OLSB
 (CNN-Guided Distortion-Aware Adaptive EMD-OLSB Framework for Reversible Data Hiding in RGB Images)
 Fully supports embedding & extracting Text Messages, Secret Images, and Binary/Document Files
 with zero-error automatic resolution & compression optimization.
-Proposed model uses dual-stego output (S1, S2) for exact cover recovery.
+The proposed model uses one lossless PNG stego image and embedded recovery data
+for exact cover recovery.
 """
 
 import streamlit as st
@@ -15,7 +16,6 @@ import pandas as pd
 from PIL import Image
 import io
 import os
-import zlib
 import matplotlib.pyplot as plt
 
 from benchmark.runner import BenchmarkRunner
@@ -300,7 +300,7 @@ if page == "🏠 Home / Architecture":
             <h4>5. EMD-OLSB RDH (Paper 5)</h4>
             <p>Dual-Image Reversible Data Hiding using Exploiting Modification Direction (EMD) mod-5 function with dual-image averaging for cover recovery.</p>
             <h4>6. CNN-DA-EMD-OLSB (Proposed)</h4>
-            <p><b>Our proposed system.</b> CNN-Guided Distortion-Aware Adaptive EMD+OLSB with per-channel DistortionCNN maps, R-G EMD coupling, Blue OLSB, AES-256-GCM encryption, and dual-stego reversibility.</p>
+            <p><b>Our proposed system.</b> CNN-Guided Distortion-Aware Adaptive EMD+OLSB with per-channel DistortionCNN maps, R-G EMD coupling, Blue OLSB, AES-256-GCM encryption, and single-stego reversibility.</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -310,7 +310,7 @@ elif page == "📥 Embed Payload (Proposed)":
     st.markdown("### 📥 Embed Secret Data using CNN-DA-EMD-OLSB (Proposed System)")
     st.info(
         "💡 **Proposed System**: CNN-Guided Distortion-Aware Adaptive EMD-OLSB.  \n"
-        "Produces **two stego images (S1, S2)** for exact cover recovery via dual-image averaging.  \n"
+        "Produces **one lossless PNG stego image** and recovers the cover from embedded recovery data.  \n"
         "Hiding options: Text Message, Secret Image, or Document / Binary File."
     )
 
@@ -331,9 +331,15 @@ elif page == "📥 Embed Payload (Proposed)":
             cap_info = compute_capacity(cls_r, cls_g, cls_b, upper_c)
             usable_cap_bytes = cap_info['usable_capacity_bytes']
             theo_cap_bytes = cap_info['theoretical_capacity_bytes']
-            max_capacity_bytes = max(64, usable_cap_bytes - 128)
+            # This is a conservative UI hint only. The embedding engine performs
+            # the authoritative capacity check after encryption and side-info sizing.
+            max_capacity_bytes = max(256, usable_cap_bytes - 256)
             st.image(cover_rgb, caption=f"Cover Image ({w}x{h})", use_container_width=True)
-            st.caption(f"Usable Capacity: **{usable_cap_bytes:,} bytes** ({cap_info['usable_capacity_bits']:,} bits) | Theoretical: {theo_cap_bytes:,} bytes")
+            st.caption(
+                f"Gross carrier capacity: **{usable_cap_bytes:,} bytes** "
+                f"({cap_info['usable_capacity_bits']:,} bits) | "
+                f"Theoretical: {theo_cap_bytes:,} bytes. Encryption and recovery metadata reduce usable payload space."
+            )
 
     with col2:
         payload_option = st.radio(
@@ -348,13 +354,8 @@ elif page == "📥 Embed Payload (Proposed)":
             secret_text = st.text_area("Enter Secret Text Message:", "Confidential research data 2026")
             if secret_text:
                 raw_b = secret_text.encode('utf-8')
-                max_bytes = max_capacity_bytes if cover_rgb is not None else 500000
-                if len(raw_b) > max_bytes:
-                    secret_bytes = raw_b[:max_bytes]
-                    st.warning(f"⚠️ Text payload trimmed to image capacity: {len(secret_bytes):,} bytes")
-                else:
-                    secret_bytes = raw_b
-                    st.caption(f"Payload size: {len(secret_bytes):,} bytes")
+                secret_bytes = raw_b
+                st.caption(f"Payload size: {len(secret_bytes):,} bytes. Oversized payloads are rejected without truncation.")
                 payload_type = 0
 
         elif payload_option == "🖼️ Secret Image":
@@ -371,22 +372,17 @@ elif page == "📥 Embed Payload (Proposed)":
         elif payload_option == "📄 Document / Binary File":
             uploaded_file = st.file_uploader("Upload Document/File to Hide:", type=["pdf", "zip", "txt", "docx", "bin", "dat"])
             if uploaded_file and cover_rgb is not None:
-                raw_bytes = uploaded_file.getvalue()
-                max_bytes = max_capacity_bytes if cover_rgb is not None else 500000
-                compressed_bytes = zlib.compress(raw_bytes, level=9)
-                if len(compressed_bytes) <= max_bytes:
-                    secret_bytes = compressed_bytes
-                    st.info(f"File compressed: {len(secret_bytes):,} bytes")
-                else:
-                    secret_bytes = compressed_bytes[:max_bytes]
-                    st.warning(f"File trimmed to capacity: {len(secret_bytes):,} bytes")
+                secret_bytes = uploaded_file.getvalue()
+                st.info(
+                    f"Original file selected: {len(secret_bytes):,} bytes. "
+                    "The encrypted payload layer will compress it only when beneficial; it will never be truncated."
+                )
                 payload_type = 2
 
     if cover_rgb is not None and secret_bytes is not None:
         if st.button("🚀 Embed Secret Payload (CNN-DA-EMD-OLSB)", type="primary"):
-            with st.spinner("Running CNN distortion maps + adaptive dual-stego embedding..."):
+            with st.spinner("Running CNN distortion maps + adaptive single-stego embedding..."):
                 try:
-                    cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
                     cnn_model = runner.adapters['CNN-DA-EMD-OLSB'].model._cnn_model
                     stego_rgb, stats = embed_cnn_da_emd_olsb(
                         cover_rgb=cover_rgb,
@@ -436,7 +432,7 @@ elif page == "📥 Embed Payload (Proposed)":
         # ---- Image comparison ----
         st.markdown("#### 🖼️ Single Stego Image — Preview & Download")
         
-        st.error("⚠️ **CRITICAL: DO NOT right-click to save images!** Browsers compress right-clicked images, destroying pixel-level steganography. **Use the Download button below** to save lossless PNG.")
+        st.info("Save and transmit the stego only as PNG or BMP. JPEG recompression changes embedded bits and invalidates extraction.")
         
         ic1, ic2, ic3 = st.columns(3)
         ic1.image(c_rgb, caption="Original Cover", use_container_width=True, output_format="PNG")

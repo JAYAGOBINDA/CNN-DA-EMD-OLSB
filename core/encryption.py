@@ -28,7 +28,13 @@ def derive_key(password: str, salt: bytes, iterations: int = 100_000) -> bytes:
     return kdf.derive(password_bytes)
 
 
-def encrypt_payload(data: bytes, password: str, associated_data: bytes = None) -> Tuple[bytes, bytes, bytes]:
+def encrypt_payload(
+    data: bytes,
+    password: str,
+    associated_data: bytes = None,
+    salt: bytes = None,
+    nonce: bytes = None,
+) -> Tuple[bytes, bytes, bytes]:
     """
     Encrypts arbitrary byte payload using AES-256-GCM.
 
@@ -39,12 +45,20 @@ def encrypt_payload(data: bytes, password: str, associated_data: bytes = None) -
             If provided, this data is authenticated by the GCM tag but NOT
             encrypted. Used to bind recovery side information to the ciphertext
             so that tampering with either is detected.
+        salt: Optional 16-byte PBKDF2 salt. A fresh random salt is generated
+            when omitted.
+        nonce: Optional 12-byte AES-GCM nonce. A fresh random nonce is
+            generated when omitted.
 
     Returns:
         salt (16 bytes), nonce (12 bytes), ciphertext (includes GCM authentication tag)
     """
-    salt = os.urandom(16)
-    nonce = os.urandom(12)
+    salt = os.urandom(16) if salt is None else salt
+    nonce = os.urandom(12) if nonce is None else nonce
+    if len(salt) != 16:
+        raise ValueError("AES-256-GCM salt must be exactly 16 bytes.")
+    if len(nonce) != 12:
+        raise ValueError("AES-GCM nonce must be exactly 12 bytes.")
     key = derive_key(password, salt)
     
     aesgcm = AESGCM(key)

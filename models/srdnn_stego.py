@@ -1,108 +1,111 @@
-"""
-Model 4: SRDNN-Stego (Super-Resolution Deep Neural Network Multi-Image Steganography)
-High-Density Multi-Image Steganography Model from Literature Paper 4.
+"""Self-contained non-reversible steganography reference baseline.
+
+This module intentionally does not claim carrier recovery or an unbundled
+super-resolution checkpoint. It provides a reproducible two-LSB payload-hiding
+baseline with an in-band AES-GCM header and a password-derived Lorenz
+permutation. The output can be extracted after being saved and reloaded.
 """
 
+import struct
 import numpy as np
-import cv2
-import io
-import torch
-import torch.nn as nn
-from PIL import Image
 from typing import Tuple, Dict, Any
-from utils.payload_utils import apply_3d_chaotic_permute, apply_3d_chaotic_inverse, simulate_ecc_key_encryption, simulate_ecc_key_decryption, bytes_to_bits, bits_to_bytes
-from utils.image_utils import load_image_rgb, resize_image
+
+from core.encryption import encrypt_payload, decrypt_payload
+from utils.payload_utils import (
+    bytes_to_bits,
+    bits_to_bytes,
+    apply_3d_chaotic_permute,
+    apply_3d_chaotic_inverse,
+    generate_3d_lorenz_sequence,
+)
+
+
+_HEADER_MAGIC = b'SR41'
+_HEADER_FORMAT = '!4sI16s12s'
+_HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)
 
 
 def hashlib_key(key_str: str) -> int:
-    """Derives a compact integer key from a password string using MD5."""
+    """Derive a deterministic permutation seed from a password."""
     import hashlib
-    return int(hashlib.md5(key_str.encode('utf-8')).hexdigest()[:6], 16)
-
-
-class SRDNNReconstructionNetwork(nn.Module):
-    """Super-Resolution Neural Network for high-frequency secret feature enhancement."""
-    def __init__(self):
-        super(SRDNNReconstructionNetwork, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(32, 3, kernel_size=3, padding=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = torch.relu(self.conv1(x))
-        h = torch.relu(self.conv2(h))
-        out = self.conv3(h)
-        return out
+    return int(hashlib.sha256(key_str.encode('utf-8')).hexdigest()[:8], 16)
 
 
 class SRDNNStego:
-    """SRDNN Multi-Image Steganography Model Implementation."""
-    def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.srdnn = SRDNNReconstructionNetwork().to(self.device)
-        self.srdnn.eval()
+    """Portable encrypted LSB steganography baseline (not an RDH method)."""
 
     def embed(self, cover_rgb: np.ndarray, secret_data: bytes, password: str = "ECC_Key_2026") -> Tuple[np.ndarray, Dict[str, Any]]:
-        h, w, c = cover_rgb.shape
+        if cover_rgb.ndim != 3 or cover_rgb.shape[2] != 3 or cover_rgb.dtype != np.uint8:
+            raise ValueError("SRDNN-Stego baseline requires an HxWx3 uint8 RGB cover image.")
 
-        # Step 1: Security Component 1 — ECC Encryption Simulation
-        ecc_encrypted_bytes, pubkey_hex = simulate_ecc_key_encryption(secret_data, password)
-        raw_bits = bytes_to_bits(ecc_encrypted_bytes)
+        salt, nonce, ciphertext = encrypt_payload(secret_data, password)
+        header = struct.pack(_HEADER_FORMAT, _HEADER_MAGIC, len(ciphertext), salt, nonce)
+        header_bits = bytes_to_bits(header)
+        encrypted_bits = bytes_to_bits(ciphertext)
+        permuted_bits, _ = apply_3d_chaotic_permute(encrypted_bits, key_seed=hashlib_key(password))
 
-        # Step 2: Security Component 2 — 3D Lorenz Chaotic Permutation Map
-        permuted_bits, perm_idx = apply_3d_chaotic_permute(raw_bits, key_seed=int(hashlib_key(password)))
-        total_bits = len(permuted_bits)
+        flat_stego = cover_rgb.reshape(-1).copy()
+        body_slots = len(flat_stego) - len(header_bits)
+        needed_slots = (len(permuted_bits) + 1) // 2
+        if body_slots < needed_slots:
+            raise ValueError(
+                f"SRDNN-Stego payload needs {needed_slots} two-bit slots after its header, "
+                f"but the cover provides {max(0, body_slots)}."
+            )
 
-        # Step 3: SRDNN Feature Pass
-        stego_tensor = torch.from_numpy(cover_rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            enhanced_tensor = stego_tensor + 0.001 * self.srdnn(stego_tensor)
-            enhanced_np = (enhanced_tensor.squeeze().permute(1, 2, 0).cpu().numpy() * 255.0)
+        for index, bit in enumerate(header_bits):
+            flat_stego[index] = (flat_stego[index] & 0xFE) | int(bit)
 
-        stego_enhanced = np.clip(enhanced_np, 0, 255).astype(np.uint8)
+        start = len(header_bits)
+        for slot in range(needed_slots):
+            chunk = permuted_bits[slot * 2:min((slot + 1) * 2, len(permuted_bits))]
+            value = 0
+            for bit in chunk:
+                value = (value << 1) | int(bit)
+            if len(chunk) == 1:
+                value <<= 1
+            flat_stego[start + slot] = (flat_stego[start + slot] & 0xFC) | value
 
-        # Step 4: Bitstream Embedding into SRDNN-Enhanced Image
-        flat_stego = stego_enhanced.reshape(-1)
-        num_chunks = int(np.ceil(total_bits / 2))
-
-        for i in range(num_chunks):
-            chunk = permuted_bits[i*2 : min((i+1)*2, total_bits)]
-            val = 0
-            for b in chunk:
-                val = (val << 1) | int(b)
-            mask = ~((1 << len(chunk)) - 1) & 0xFF
-            flat_stego[i] = (flat_stego[i] & mask) | val
-
-        stego_final = flat_stego.reshape(h, w, c)
-
-        stats = {
-            'total_bits_embedded': total_bits,
-            'bpp': total_bits / (h * w * 3),
-            'ecc_pubkey': pubkey_hex,
-            '3d_chaotic_seed': password,
-            'perm_idx': perm_idx,
-            'model_name': 'SRDNN-Stego'
+        total_bits = len(header_bits) + len(permuted_bits)
+        return flat_stego.reshape(cover_rgb.shape), {
+            'total_bits_embedded': int(total_bits),
+            'payload_ciphertext_bits': int(len(permuted_bits)),
+            'bpp': float(total_bits / (cover_rgb.shape[0] * cover_rgb.shape[1])),
+            'self_contained_extraction': True,
+            'reversible': False,
+            'model_name': 'SRDNN-Stego',
         }
 
-        return stego_final, stats
-
-    def extract(self, stego_rgb: np.ndarray, total_bits: int, perm_idx: np.ndarray, password: str = "ECC_Key_2026") -> bytes:
+    def extract(self, stego_rgb: np.ndarray, password: str = "ECC_Key_2026") -> bytes:
+        if stego_rgb.ndim != 3 or stego_rgb.shape[2] != 3:
+            raise ValueError("SRDNN-Stego extraction requires an HxWx3 RGB stego image.")
         flat_stego = stego_rgb.reshape(-1)
-        num_chunks = int(np.ceil(total_bits / 2))
+        header_bit_count = _HEADER_SIZE * 8
+        if len(flat_stego) < header_bit_count:
+            raise ValueError("Stego image is too small for the SRDNN-Stego header.")
 
-        extracted_bits = []
-        for i in range(num_chunks):
-            bits_needed = min(2, total_bits - len(extracted_bits))
-            val = flat_stego[i] & ((1 << bits_needed) - 1)
-            chunk = [(val >> (bits_needed - 1 - b)) & 1 for b in range(bits_needed)]
-            extracted_bits.extend(chunk)
+        header_bits = np.array([int(value) & 1 for value in flat_stego[:header_bit_count]], dtype=np.uint8)
+        magic, cipher_len, salt, nonce = struct.unpack(_HEADER_FORMAT, bits_to_bytes(header_bits))
+        if magic != _HEADER_MAGIC:
+            raise ValueError("Invalid SRDNN-Stego header.")
+        if cipher_len < 16:
+            raise ValueError("Invalid SRDNN-Stego ciphertext length.")
 
-        permuted_arr = np.array(extracted_bits[:total_bits], dtype=np.uint8)
+        total_bits = cipher_len * 8
+        needed_slots = (total_bits + 1) // 2
+        if header_bit_count + needed_slots > len(flat_stego):
+            raise ValueError("SRDNN-Stego image ended before the declared ciphertext.")
 
-        # Step 1: Inverse 3D Lorenz Chaotic Map Permutation
-        raw_bits = apply_3d_chaotic_inverse(permuted_arr, perm_idx)
-        ecc_encrypted_bytes = bits_to_bytes(raw_bits)
+        permuted = []
+        for slot in range(needed_slots):
+            bits_needed = min(2, total_bits - len(permuted))
+            value = int(flat_stego[header_bit_count + slot]) & 0x03
+            if bits_needed == 1:
+                permuted.append((value >> 1) & 1)
+            else:
+                permuted.extend([(value >> 1) & 1, value & 1])
 
-        # Step 2: ECC Decryption
-        secret_bytes = simulate_ecc_key_decryption(ecc_encrypted_bytes, password)
-        return secret_bytes
+        perm_idx = generate_3d_lorenz_sequence(total_bits, x0=0.1 + (hashlib_key(password) % 100) / 1000.0)
+        ciphertext_bits = apply_3d_chaotic_inverse(np.asarray(permuted, dtype=np.uint8), perm_idx)
+        ciphertext = bits_to_bytes(ciphertext_bits)[:cipher_len]
+        return decrypt_payload(ciphertext, password, salt, nonce)

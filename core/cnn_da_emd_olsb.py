@@ -58,7 +58,8 @@ from typing import Tuple, Dict, Any, Optional
 from core.payload import (
     prepare_payload, parse_payload,
     bytes_to_bits, bits_to_bytes,
-    HEADER_SIZE_BYTES, HEADER_MAGIC
+    HEADER_SIZE_BYTES, HEADER_MAGIC, HEADER_FORMAT, HEADER_FORMAT_MARKER,
+    _decode_unit_interval,
 )
 from cnn.distortion_cnn import compute_distortion_maps, was_cnn_inference_executed
 
@@ -144,8 +145,8 @@ def _is_valid_header(header_bytes: bytes, h: int, w: int, c: int) -> bool:
     if len(header_bytes) < HEADER_SIZE_BYTES or header_bytes[:4] != HEADER_MAGIC:
         return False
     try:
-        magic, _, _, _, cipher_len, _, _, t1, t2, gamma, _, locmap_size, _ = struct.unpack(
-            '!4sBB2sI16s12sfffII4s', header_bytes[:HEADER_SIZE_BYTES]
+        magic, _, _, _, cipher_len, _, _, t1, t2, gamma, _, locmap_size, _, _ = struct.unpack(
+            HEADER_FORMAT, header_bytes[:HEADER_SIZE_BYTES]
         )
         return (
             magic == HEADER_MAGIC and
@@ -159,14 +160,23 @@ def _is_valid_header(header_bytes: bytes, h: int, w: int, c: int) -> bool:
         return False
 
 
-def _parse_header(header_bytes: bytes, h: int, w: int, c: int) -> Tuple[int, float, float, float, int]:
-    """Parse embedded header; return (cipher_len, t1, t2, gamma, locmap_size)."""
+def _parse_header(
+    header_bytes: bytes,
+    h: int,
+    w: int,
+    c: int,
+    default_alpha: float = 0.5,
+    default_beta: float = 0.5,
+) -> Tuple[int, float, float, float, int, float, float]:
+    """Parse header and return cipher lengths plus deterministic routing parameters."""
     try:
-        magic, _, _, _, cipher_len, _, _, t1, t2, gamma, _, locmap_size, _ = struct.unpack(
-            '!4sBB2sI16s12sfffII4s', header_bytes
+        magic, _, _, marker, cipher_len, _, _, t1, t2, gamma, _, locmap_size, alpha_q, beta_q = struct.unpack(
+            HEADER_FORMAT, header_bytes
         )
         if magic == HEADER_MAGIC and 0.0 <= t1 <= 1.0 and 0.0 <= t2 <= 1.0 and 0.0 <= gamma <= 1.0:
-            return int(cipher_len), float(t1), float(t2), float(gamma), int(locmap_size)
+            alpha = _decode_unit_interval(alpha_q) if marker == HEADER_FORMAT_MARKER else default_alpha
+            beta = _decode_unit_interval(beta_q) if marker == HEADER_FORMAT_MARKER else default_beta
+            return int(cipher_len), float(t1), float(t2), float(gamma), int(locmap_size), float(alpha), float(beta)
     except Exception:
         pass
     try:
@@ -511,7 +521,7 @@ def embed_cnn_da_emd_olsb(
     # First estimate without side info
     payload_bytes_est = prepare_payload(
         secret_data, password, t1, t2, payload_type, gamma=gamma,
-        location_map_data=None
+        location_map_data=None, alpha=alpha, beta=beta
     )
     body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
     body_bits_est = len(body_est) * 8
@@ -534,12 +544,14 @@ def embed_cnn_da_emd_olsb(
     # Rebuild payload with side info
     payload_bytes = prepare_payload(
         secret_data, password, t1, t2, payload_type, gamma=gamma,
-        location_map_data=side_info
+        location_map_data=side_info, alpha=alpha, beta=beta
     )
     body = payload_bytes[HEADER_SIZE_BYTES:]
     body_bits = len(body) * 8
 
-    # Iterate until converged (typically 4-7 iterations)
+    # Iterate until the positions recorded in recovery side information are
+    # exactly the positions required by the final encoded body.
+    converged = False
     for _iter in range(15):
         emd_bits_needed = min(body_bits, total_emd_bits_cap)
         emd_bits_needed = (emd_bits_needed // 2) * 2
@@ -554,18 +566,28 @@ def embed_cnn_da_emd_olsb(
             bootstrap_yx, bootstrap_orig_lsbs
         )
 
-        prev_len = len(side_info)
         side_info = new_side_info
 
         payload_bytes = prepare_payload(
             secret_data, password, t1, t2, payload_type, gamma=gamma,
-            location_map_data=side_info
+            location_map_data=side_info, alpha=alpha, beta=beta
         )
         body = payload_bytes[HEADER_SIZE_BYTES:]
         body_bits = len(body) * 8
 
-        if len(new_side_info) == prev_len:
-            break  # Converged
+        next_emd_bits = min(body_bits, total_emd_bits_cap)
+        next_emd_bits = (next_emd_bits // 2) * 2
+        next_emd_used = next_emd_bits // 2
+        next_olsb_used = (body_bits - next_emd_bits + 2) // 3
+        if (next_emd_used, next_olsb_used) == (emd_used, olsb_used):
+            converged = True
+            break
+
+    if not converged:
+        raise RuntimeError(
+            "CNN-DA-EMD-OLSB: recovery-side-information sizing did not converge. "
+            "Try a smaller payload or a different cover image."
+        )
 
     # ── Step 5: Final capacity check ──────────────────────────────────────
     if body_bits > usable_body_capacity:
@@ -708,6 +730,8 @@ def embed_cnn_da_emd_olsb(
         'raw_bpp':                    raw_bpp,
         'prepared_payload_bits':      len(payload_bytes) * 8,
         'prepared_payload_bytes':     len(payload_bytes),
+        'embedded_bitstream_bits':    len(payload_bytes) * 8,
+        'embedded_bitstream_bytes':   len(payload_bytes),
         'recovery_side_info_bits':    len(side_info) * 8,
         'recovery_side_info_bytes':   len(side_info),
         # ── Actual embedded counts ──
@@ -831,10 +855,12 @@ def extract_cnn_da_emd_olsb(
             "an incompatible version."
         )
 
-    cipher_len, t1_h, t2_h, gamma_h, side_info_len = _parse_header(header_bytes, h, w, c)
+    cipher_len, t1_h, t2_h, gamma_h, side_info_len, alpha_h, beta_h = _parse_header(
+        header_bytes, h, w, c, default_alpha=alpha, default_beta=beta
+    )
 
     # Use parameters from header (deterministic recovery — no guessing)
-    t1, t2, gamma = t1_h, t2_h, gamma_h
+    t1, t2, gamma, alpha, beta = t1_h, t2_h, gamma_h, alpha_h, beta_h
 
     # ── Step 3: Compute gamma-dependent capacity maps ─────────────────────
     upper_stego = (stego_rgb & 0xF8).astype(np.uint8)

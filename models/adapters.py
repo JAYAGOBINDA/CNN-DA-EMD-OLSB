@@ -127,9 +127,7 @@ class SRDNNAdapter(BaseModelAdapter):
         return self.model.embed(cover_rgb, payload_bytes, password=password)
 
     def extract(self, stego_output: np.ndarray, stats: Dict[str, Any], password: str = "Pass123!") -> Tuple[bytes, None]:
-        total_bits = stats.get('total_bits_embedded', 512)
-        perm_idx = stats.get('perm_idx', np.arange(total_bits))
-        extracted_bytes = self.model.extract(stego_output, total_bits, perm_idx, password=password)
+        extracted_bytes = self.model.extract(stego_output, password=password)
         return extracted_bytes, None
 
     def get_compatibility_protocol(self) -> Dict[str, Any]:
@@ -137,10 +135,10 @@ class SRDNNAdapter(BaseModelAdapter):
             'Model': 'SRDNN-Stego',
             'Input Type': 'RGB Photo',
             'Payload Type': 'Secret Image / Binary File',
-            'Output Type': 'Super-Resolution Stego Photo',
+            'Output Type': 'Single Stego Photo',
             'Reversible?': 'No (High-Capacity Payload Hiding)',
-            'Deep Learning?': 'Yes (SRDNN Reconstruction Network)',
-            'Special Requirements': '3D Lorenz Chaotic Map Permutation & ECC Key Security'
+            'Deep Learning?': 'No trained SRDNN checkpoint bundled',
+            'Special Requirements': 'AES-256-GCM payload encryption & 3D Lorenz permutation'
         }
 
 
