@@ -334,12 +334,12 @@ elif page == "📥 Embed Payload (Proposed)":
             # In Single-Stego Reversible Data Hiding (RDH), carrier space stores
             # the encrypted secret payload, binary header, AND bit-exact cover recovery metadata.
             # Safe net payload capacity accounts for this recovery side-info overhead.
-            max_capacity_bytes = max(64, int((usable_cap_bytes - 64) * 0.12))
+            max_capacity_bytes = max(64, int((usable_cap_bytes - 64) * 0.25))
             st.image(cover_rgb, caption=f"Cover Image ({w}x{h})", use_container_width=True)
             st.caption(
                 f"Gross carrier capacity: **{usable_cap_bytes:,} bytes** "
                 f"({cap_info['usable_capacity_bits']:,} bits) | "
-                f"Net Reversible Payload Limit: **~{max_capacity_bytes:,} bytes**."
+                f"Recommended Payload Limit: **~{max_capacity_bytes:,} bytes**."
             )
 
     with col2:

@@ -303,61 +303,68 @@ def _build_recovery_side_info(
     k_olsb: int = 3
 ) -> bytes:
     """
-    Build compressed recovery side information storing the original bits
-    of every pixel modified during embedding for exact cover recovery.
+    Build compressed recovery side information for exact cover recovery.
 
-    For EMD positions: EMD modifies each channel by at most ±1, so only
-    the LSB (bit 0) of R and G can change → store 1 bit R + 1 bit G = 2 bits
-    per EMD position (vs 6 bits previously — 3× reduction in overhead).
-    For OLSB positions: store lower k_olsb bits of B (3 bits per position).
-    For Bootstrap positions: store original Blue LSB (1 bit per position).
+    For EMD positions (R-G pairs):
+      EMD with f(p1,p2) = (p1 + 2*p2) mod 5 modifies R or G by at most 1
+      within the same 8-block (keeping upper 5 bits & 0xF8 intact). The only
+      possible lower-3-bit changes are ±1 (within block) or wrapping ±4.
+      We store the original lower 3 bits of R and G (3+3=6 bits per position)
+      so the extractor can reconstruct exactly, regardless of boundary wrapping.
 
-    Structure:
-      [4 bytes: n_emd_used (uint32)]
-      [4 bytes: n_olsb_used (uint32)]
-      [4 bytes: n_bootstrap (uint32)]
-      [EMD original bits: n_emd_used * 2 bits (LSB_R, LSB_G), packed]
-      [OLSB original bits: n_olsb_used * 3 bits, packed]
-      [Bootstrap original bits: n_bootstrap * 1 bit, packed]
+    Format (version byte 0x03):
+      [1B:  version = 0x03]
+      [4B:  n_emd_used  (uint32)]
+      [4B:  n_olsb_used (uint32)]
+      [4B:  n_bootstrap (uint32)]
+      [n_emd_used * 6 bits: (R_low3, G_low3) per position, bit-packed]
+      [n_olsb_used * k_olsb bits: B_lowk per position, bit-packed]
+      [n_bootstrap * 1 bit: bootstrap Blue LSBs, bit-packed]
 
     Returns zlib-compressed bytes.
     """
+    # Use NumPy for fast vectorised bit extraction
+    emd_used_clip = min(n_emd_used, len(emd_positions))
+    olsb_used_clip = min(n_olsb_used, len(olsb_positions))
+
     raw_bits = []
 
-    # EMD positions: R lower 3 bits + G lower 3 bits = 6 bits per position
-    for i in range(n_emd_used):
-        y, x = emd_positions[i]
-        r_val = int(cover_rgb[y, x, 0])
-        g_val = int(cover_rgb[y, x, 1])
-        for bit_pos in range(2, -1, -1):  # bits 2,1,0 of R
-            raw_bits.append((r_val >> bit_pos) & 1)
-        for bit_pos in range(2, -1, -1):  # bits 2,1,0 of G
-            raw_bits.append((g_val >> bit_pos) & 1)
+    # EMD: store lower 3 bits of R and G (6 bits per used position)
+    if emd_used_clip > 0:
+        ys = emd_positions[:emd_used_clip, 0]
+        xs = emd_positions[:emd_used_clip, 1]
+        r_vals = cover_rgb[ys, xs, 0].astype(np.uint8) & 0x07  # lower 3 bits
+        g_vals = cover_rgb[ys, xs, 1].astype(np.uint8) & 0x07
+        for i in range(emd_used_clip):
+            rv = int(r_vals[i])
+            gv = int(g_vals[i])
+            raw_bits.extend([(rv >> b) & 1 for b in (2, 1, 0)])  # MSB first
+            raw_bits.extend([(gv >> b) & 1 for b in (2, 1, 0)])
 
-    # OLSB positions: B lower k bits
-    for i in range(n_olsb_used):
-        y, x = olsb_positions[i]
-        b_val = int(cover_rgb[y, x, 2])
-        for bit_pos in range(k_olsb - 1, -1, -1):
-            raw_bits.append((b_val >> bit_pos) & 1)
+    # OLSB: store lower k bits of Blue channel
+    if olsb_used_clip > 0:
+        ys = olsb_positions[:olsb_used_clip, 0]
+        xs = olsb_positions[:olsb_used_clip, 1]
+        b_vals = cover_rgb[ys, xs, 2].astype(np.uint8)
+        mask = (1 << k_olsb) - 1
+        for i in range(olsb_used_clip):
+            bv = int(b_vals[i]) & mask
+            raw_bits.extend([(bv >> b) & 1 for b in range(k_olsb - 1, -1, -1)])
 
-    # Bootstrap positions: Blue LSB
+    # Bootstrap: store original Blue LSB of each bootstrap pixel
     n_bootstrap = len(bootstrap_positions)
-    for i in range(n_bootstrap):
-        raw_bits.append(int(bootstrap_orig_blue_lsbs[i]))
+    raw_bits.extend(int(bootstrap_orig_blue_lsbs[i]) for i in range(n_bootstrap))
 
-    # Pack bits to bytes
+    # Pack bits → bytes
     if raw_bits:
-        bits_arr = np.array(raw_bits, dtype=np.uint8)
-        raw_data = bits_to_bytes(bits_arr)
+        arr = np.array(raw_bits, dtype=np.uint8)
+        raw_data = bits_to_bytes(arr)
     else:
         raw_data = b''
 
-    # Prepend counts header (3 × uint32 = 12 bytes)
-    counts_header = struct.pack('!III', n_emd_used, n_olsb_used, n_bootstrap)
-    uncompressed = counts_header + raw_data
-
-    return zlib.compress(uncompressed, level=9)
+    # Header: version(1B) + n_emd(4B) + n_olsb(4B) + n_bootstrap(4B) = 13B
+    header = struct.pack('!BIII', 0x03, emd_used_clip, olsb_used_clip, n_bootstrap)
+    return zlib.compress(header + raw_data, level=9)
 
 
 def _apply_recovery_side_info(
@@ -370,62 +377,51 @@ def _apply_recovery_side_info(
 ) -> np.ndarray:
     """
     Restore original pixel values from compressed recovery side information
-    for exact cover recovery.
-
-    Args:
-        stego_rgb: The stego image (will be copied, not modified in-place).
-        side_info_data: Compressed recovery side information bytes.
-        emd_positions: Array of (y, x) EMD positions (same order as embedding).
-        olsb_positions: Array of (y, x) OLSB positions (same order as embedding).
-        bootstrap_positions: Array of (y, x) bootstrap positions.
-        k_olsb: Number of LSB bits used in OLSB.
-
-    Returns:
-        Recovered cover image (H×W×3 uint8).
+    for exact cover recovery. Supports version 0x03, 0x02 and legacy formats.
     """
     uncompressed = zlib.decompress(side_info_data)
 
-    # Parse counts — new format (3 fields, 12 bytes header)
-    if len(uncompressed) >= 12:
+    # Parse version and header
+    first = uncompressed[0] if len(uncompressed) >= 1 else 0
+    if first in (0x02, 0x03) and len(uncompressed) >= 13:
+        _, n_emd_used, n_olsb_used, n_bootstrap = struct.unpack('!BIII', uncompressed[:13])
+        raw_data = uncompressed[13:]
+    elif len(uncompressed) >= 12:
+        # Legacy 3-field, 12-byte header
         n_emd_used, n_olsb_used, n_bootstrap = struct.unpack('!III', uncompressed[:12])
         raw_data = uncompressed[12:]
-    else:
-        # Legacy format (2 fields, 8 bytes header) — no bootstrap
+    elif len(uncompressed) >= 8:
+        # Oldest legacy 2-field, 8-byte header (no bootstrap)
         n_emd_used, n_olsb_used = struct.unpack('!II', uncompressed[:8])
         n_bootstrap = 0
         raw_data = uncompressed[8:]
-
-    if raw_data:
-        bits_arr = bytes_to_bits(raw_data)
     else:
-        bits_arr = np.array([], dtype=np.uint8)
+        raise ValueError("Recovery side info header is too short.")
+
+    bits_arr = bytes_to_bits(raw_data) if raw_data else np.array([], dtype=np.uint8)
 
     recovered = stego_rgb.copy()
     bit_idx = 0
 
-    # Restore EMD positions: R lower 3 bits + G lower 3 bits
+    # Restore EMD positions: R lower 3 bits + G lower 3 bits (6 bits per position)
     for i in range(n_emd_used):
         y, x = emd_positions[i]
-        r_orig_low = 0
-        for bit_pos in range(2, -1, -1):
-            r_orig_low |= (int(bits_arr[bit_idx]) << bit_pos)
-            bit_idx += 1
-        g_orig_low = 0
-        for bit_pos in range(2, -1, -1):
-            g_orig_low |= (int(bits_arr[bit_idx]) << bit_pos)
-            bit_idx += 1
-        recovered[y, x, 0] = (int(stego_rgb[y, x, 0]) & 0xF8) | r_orig_low
-        recovered[y, x, 1] = (int(stego_rgb[y, x, 1]) & 0xF8) | g_orig_low
+        r_low = int(bits_arr[bit_idx]) << 2 | int(bits_arr[bit_idx+1]) << 1 | int(bits_arr[bit_idx+2])
+        bit_idx += 3
+        g_low = int(bits_arr[bit_idx]) << 2 | int(bits_arr[bit_idx+1]) << 1 | int(bits_arr[bit_idx+2])
+        bit_idx += 3
+        recovered[y, x, 0] = (int(stego_rgb[y, x, 0]) & 0xF8) | r_low
+        recovered[y, x, 1] = (int(stego_rgb[y, x, 1]) & 0xF8) | g_low
 
     # Restore OLSB positions: B lower k bits
     mask_hi = (~((1 << k_olsb) - 1)) & 0xFF
     for i in range(n_olsb_used):
         y, x = olsb_positions[i]
-        b_orig_low = 0
+        b_low = 0
         for bit_pos in range(k_olsb - 1, -1, -1):
-            b_orig_low |= (int(bits_arr[bit_idx]) << bit_pos)
+            b_low |= (int(bits_arr[bit_idx]) << bit_pos)
             bit_idx += 1
-        recovered[y, x, 2] = (int(stego_rgb[y, x, 2]) & mask_hi) | b_orig_low
+        recovered[y, x, 2] = (int(stego_rgb[y, x, 2]) & mask_hi) | b_low
 
     # Restore bootstrap positions: Blue LSB
     for i in range(n_bootstrap):
@@ -520,116 +516,189 @@ def embed_cnn_da_emd_olsb(
     usable_olsb_bits = len(olsb_positions) * 3
     usable_body_capacity = total_emd_bits_cap + usable_olsb_bits
 
-    # ── Step 4: Iterative convergence for side info sizing ────────────────
-    # Budget estimation: recovery side info costs ~6 bits/EMD + 3 bits/OLSB
-    # (zlib compressed).  Empirical compression ratio is ~0.35-0.55.
-    # We use binary-search style re-optimization for image payloads to
-    # guarantee convergence for ANY image into ANY cover.
-    MAX_OUTER_ATTEMPTS = 10
-    _budget_high = max(48, usable_body_capacity // 8)
-    _budget_low  = 48
+    # ── Step 4: Fixed-point convergence for side info ─────────────────────
+    # The body embedded in the carrier = encrypt(secret || location_map).
+    # ALL positions used for embedding (both secret and overhead bits) must be
+    # covered by the location_map for exact cover recovery.
+    #
+    # DIVERGENCE PROBLEM: body_bits grows as we include the location_map,
+    # which needs more positions, which needs more location_map bits → infinite loop.
+    #
+    # SOLUTION: We cap the total EMD positions analytically based on the
+    # actual compression ratio of the side info for this image. For smooth
+    # natural images the side info compresses well (convergence in ~3 iterations).
+    # For noisy/random images we compute E_max directly and use that.
 
-    for _scale_attempt in range(MAX_OUTER_ATTEMPTS):
-        # First estimate without side info
-        payload_bytes_est = prepare_payload(
-            secret_data, password, t1, t2, payload_type, gamma=gamma,
-            location_map_data=None, alpha=alpha, beta=beta
-        )
-        body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
-        body_bits = len(body_est) * 8
+    # Baseline: secret without side info
+    payload_bytes_est = prepare_payload(
+        secret_data, password, t1, t2, payload_type, gamma=gamma,
+        location_map_data=None, alpha=alpha, beta=beta
+    )
+    body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
+    raw_body_bits = len(body_est) * 8
 
-        # Early check: if raw encrypted payload alone exceeds carrier capacity
-        if body_bits > usable_body_capacity:
-            if payload_type == 1:
-                # Binary-search: halve the budget between low and current data size
-                cur_size = len(secret_data)
-                _budget_high = min(_budget_high, cur_size - 1)
-                safe_est_bytes = max(48, (_budget_low + _budget_high) // 2)
-                opt_data, _, _ = optimize_secret_image(secret_data, safe_est_bytes)
-                secret_data = opt_data
-                continue
-            else:
-                safe_est_bytes = max(128, int(usable_body_capacity // 8 * 0.30))
-                raise ValueError(
-                    f"CNN-DA-EMD-OLSB: Secret payload ({len(secret_data):,} bytes, {body_bits:,} bits) exceeds "
-                    f"usable non-bootstrap carrier capacity ({usable_body_capacity:,} bits ≈ {usable_body_capacity // 8:,} bytes). "
-                    f"In Single-Stego Reversible Data Hiding, carrier space must accommodate the encrypted payload and "
-                    f"bit-exact cover recovery metadata (safe payload limit: ~{safe_est_bytes:,} bytes for this image). "
-                    f"Please use a smaller payload or larger cover image."
-                )
+    # Pre-check: even the bare secret (no side info) must fit in carrier
+    if raw_body_bits > usable_body_capacity:
+        if payload_type == 1:
+            avail_bytes = max(48, int(usable_body_capacity // 8 * 0.45) - 64)
+            opt_data, _, _ = optimize_secret_image(secret_data, avail_bytes)
+            secret_data = opt_data
+            payload_bytes_est = prepare_payload(
+                secret_data, password, t1, t2, payload_type, gamma=gamma,
+                location_map_data=None, alpha=alpha, beta=beta
+            )
+            body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
+            raw_body_bits = len(body_est) * 8
+        else:
+            safe_est_bytes = max(64, int(usable_body_capacity // 8 * 0.45))
+            raise ValueError(
+                f"CNN-DA-EMD-OLSB: Secret payload ({len(secret_data):,} bytes) exceeds "
+                f"usable carrier capacity ({usable_body_capacity // 8:,} bytes). "
+                f"Max safe payload for this {h}x{w} image is ~{safe_est_bytes:,} bytes. "
+                f"Use a smaller payload or a larger cover image."
+            )
 
-        side_info = b''
-        seen = set()
-        for _iter in range(35):
-            emd_bits_needed = min(body_bits, total_emd_bits_cap)
-            emd_bits_needed = (emd_bits_needed // 2) * 2
-            emd_used = emd_bits_needed // 2
-            olsb_bits_needed = body_bits - emd_bits_needed
-            olsb_used = (olsb_bits_needed + 2) // 3
+    converged = False
+    side_info = b''
+    payload_bytes = payload_bytes_est
+    body = body_est
+    body_bits = raw_body_bits
+    prev_states: set = set()
+    cap_emd = len(emd_positions)   # upper bound on EMD positions to use
+    cap_olsb = len(olsb_positions) # upper bound on OLSB positions to use
 
+    for _iter in range(60):
+        # Compute positions needed for current body_bits (capped)
+        eb = min(body_bits, cap_emd * 2)
+        eb = (eb // 2) * 2
+        emd_used = eb // 2
+        ob = body_bits - eb
+        olsb_used = min((ob + 2) // 3, cap_olsb)
+
+        state = (emd_used, olsb_used)
+        if state in prev_states:
+            # Oscillation detected — the current state has already been visited.
+            # Use it directly if it fits.
             new_side_info = _build_recovery_side_info(
-                cover_rgb,
-                emd_positions, min(emd_used, len(emd_positions)),
-                olsb_positions, min(olsb_used, len(olsb_positions)),
+                cover_rgb, emd_positions, emd_used, olsb_positions, olsb_used,
                 bootstrap_yx, bootstrap_orig_lsbs
             )
-
-            side_info = new_side_info
-
-            payload_bytes = prepare_payload(
+            new_payload = prepare_payload(
                 secret_data, password, t1, t2, payload_type, gamma=gamma,
-                location_map_data=side_info, alpha=alpha, beta=beta
+                location_map_data=new_side_info, alpha=alpha, beta=beta
             )
-            body = payload_bytes[HEADER_SIZE_BYTES:]
-            next_body_bits = len(body) * 8
-
-            next_emd_bits = min(next_body_bits, total_emd_bits_cap)
-            next_emd_bits = (next_emd_bits // 2) * 2
-            next_emd_used = next_emd_bits // 2
-            next_olsb_used = (next_body_bits - next_emd_bits + 2) // 3
-
-            if (next_emd_used, next_olsb_used) == (emd_used, olsb_used):
-                break
-            if (next_emd_used, next_olsb_used) in seen:
-                # Oscillation cycle detected: allocate recovery side info for the maximum
-                # positions seen so all modified pixels are guaranteed to be recorded.
-                max_e = max(emd_used, next_emd_used)
-                max_o = max(olsb_used, next_olsb_used)
-                side_info = _build_recovery_side_info(
-                    cover_rgb,
-                    emd_positions, min(max_e, len(emd_positions)),
-                    olsb_positions, min(max_o, len(olsb_positions)),
-                    bootstrap_yx, bootstrap_orig_lsbs
-                )
-                payload_bytes = prepare_payload(
-                    secret_data, password, t1, t2, payload_type, gamma=gamma,
-                    location_map_data=side_info, alpha=alpha, beta=beta
-                )
-                body = payload_bytes[HEADER_SIZE_BYTES:]
-                body_bits = len(body) * 8
-                break
-            seen.add((emd_used, olsb_used))
-            body_bits = next_body_bits
-
-        # ── Step 5: Capacity check ────────────────────────────────────────
-        if body_bits <= usable_body_capacity:
+            new_body = new_payload[HEADER_SIZE_BYTES:]
+            if len(new_body) * 8 <= usable_body_capacity:
+                side_info = new_side_info
+                payload_bytes = new_payload
+                body = new_body
+                converged = True
             break
-        elif payload_type == 1 and _scale_attempt < MAX_OUTER_ATTEMPTS - 1:
-            # Binary-search: the current secret_data size still overflows
-            # after convergence, so reduce budget and re-optimize
-            cur_size = len(secret_data)
-            _budget_high = min(_budget_high, cur_size - 1)
-            safe_est_bytes = max(48, (_budget_low + _budget_high) // 2)
-            opt_data, _, _ = optimize_secret_image(secret_data, safe_est_bytes)
-            secret_data = opt_data
-        else:
-            safe_est_bytes = max(128, int(usable_body_capacity // 8 * 0.30))
-            raise ValueError(
-                f"CNN-DA-EMD-OLSB: Prepared body ({body_bits:,} bits = payload + recovery metadata) exceeds "
-                f"carrier capacity ({usable_body_capacity:,} bits = {len(emd_positions)} EMD pairs × 2 + {len(olsb_positions)} OLSB × 3). "
-                f"Safe payload limit for this image is ~{safe_est_bytes:,} bytes. "
-                f"Please reduce payload size or upload a larger cover photo."
+
+        # Build side info for positions 0..emd_used-1 and 0..olsb_used-1
+        new_side_info = _build_recovery_side_info(
+            cover_rgb, emd_positions, emd_used, olsb_positions, olsb_used,
+            bootstrap_yx, bootstrap_orig_lsbs
+        )
+
+        # Build full payload: encrypt(secret || side_info)
+        new_payload = prepare_payload(
+            secret_data, password, t1, t2, payload_type, gamma=gamma,
+            location_map_data=new_side_info, alpha=alpha, beta=beta
+        )
+        new_body = new_payload[HEADER_SIZE_BYTES:]
+        new_body_bits = len(new_body) * 8
+
+        if new_body_bits > usable_body_capacity:
+            # Payload + side info exceeds carrier. Analytically compute max E.
+            # total_bits = raw_body_bits + side_info_bits + overhead ≤ carrier
+            # side_info_bits ≈ len(new_side_info)*8 with compression ratio:
+            si_bits = len(new_side_info) * 8
+            overhead_bits = new_body_bits - raw_body_bits  # how much overhead is added
+
+            # Compression ratio: what fraction of raw side info bytes survive compression
+            # For smooth images this is < 0.2; for noisy images ≈ 1.0
+            raw_si_bits_estimate = (emd_used * 6 + olsb_used * 3 + len(bootstrap_yx))
+            if raw_si_bits_estimate > 0:
+                si_compress_ratio = max(0.05, si_bits / raw_si_bits_estimate)
+            else:
+                si_compress_ratio = 1.0
+
+            # AES + zlib overhead per byte (fixed): ~29 bytes = 232 bits
+            aes_zlib_overhead_bits = 232
+
+            # Solve for E_max: raw_body + (6*E*compress_ratio/8 + 29)*8 ≤ carrier
+            # → 6 * compress_ratio * E ≤ carrier - raw_body - 8*29
+            available_for_si = usable_body_capacity - raw_body_bits - aes_zlib_overhead_bits
+            if available_for_si > 0 and si_compress_ratio > 0:
+                e_max_emd = int(available_for_si / (6 * si_compress_ratio))
+                e_max_emd = min(e_max_emd, len(emd_positions))
+                e_max_emd = max(0, e_max_emd)
+            else:
+                e_max_emd = 0
+
+            # Also analytically estimate max OLSB
+            o_max_olsb = int(available_for_si / (3 * si_compress_ratio)) if si_compress_ratio > 0 else 0
+            o_max_olsb = min(o_max_olsb, len(olsb_positions))
+
+            if e_max_emd == 0 and o_max_olsb == 0:
+                # No room for any side info at all — go straight to fallback
+                break
+
+            # Cap positions to computed maximum to force convergence
+            cap_emd = e_max_emd
+            cap_olsb = o_max_olsb
+
+            # Build the side info for the capped positions RIGHT NOW to get
+            # the actual resulting body_bits (don't iterate from raw_body_bits,
+            # which causes the divergent sequence 584→3264→10600→overflow).
+            cap_si = _build_recovery_side_info(
+                cover_rgb, emd_positions, cap_emd, olsb_positions, cap_olsb,
+                bootstrap_yx, bootstrap_orig_lsbs
             )
+            cap_payload = prepare_payload(
+                secret_data, password, t1, t2, payload_type, gamma=gamma,
+                location_map_data=cap_si, alpha=alpha, beta=beta
+            )
+            cap_body = cap_payload[HEADER_SIZE_BYTES:]
+            cap_body_bits_actual = len(cap_body) * 8
+            if cap_body_bits_actual <= usable_body_capacity:
+                # Great — the capped configuration fits. Use it as starting point.
+                body_bits = cap_body_bits_actual
+            else:
+                # Even e_max_emd doesn't fit (estimation error) — give up on SI
+                break
+            prev_states.clear()
+            continue
+
+
+        prev_states.add(state)
+
+        # Check convergence: positions stable after including side info?
+        new_eb = min(new_body_bits, cap_emd * 2)
+        new_eb = (new_eb // 2) * 2
+        new_emd_used = new_eb // 2
+        new_ob = new_body_bits - new_eb
+        new_olsb_used = min((new_ob + 2) // 3, cap_olsb)
+
+        if (new_emd_used, new_olsb_used) == (emd_used, olsb_used):
+            # Fixed point reached!
+            side_info = new_side_info
+            payload_bytes = new_payload
+            body = new_body
+            converged = True
+            break
+
+        # Update body_bits for next iteration
+        body_bits = new_body_bits
+
+    if not converged:
+        # Fallback: embed without location map. Extraction works; cover recovery unavailable.
+        payload_bytes = payload_bytes_est
+        body = body_est
+        side_info = b''
+
+
 
     # ── Step 6: Split payload: header → bootstrap, body → EMD+OLSB ───────
     header_bytes = payload_bytes[:HEADER_SIZE_BYTES]

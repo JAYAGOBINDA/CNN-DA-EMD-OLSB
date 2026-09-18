@@ -1,0 +1,9 @@
+image,image_type,channel,entropy
+stego (14).png,cover,R,7.307583
+stego (14).png,cover,G,7.644324
+stego (14).png,cover,B,7.213641
+stego (14).png,cover,overall,7.760597
+stego (14).png,stego,R,7.307583
+stego (14).png,stego,G,7.644324
+stego (14).png,stego,B,7.213641
+stego (14).png,stego,overall,7.760597

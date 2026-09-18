@@ -1,0 +1,3 @@
+image,image_type,corr_horizontal,corr_vertical,corr_diagonal
+stego (14).png,cover,0.97598,0.973534,0.959446
+stego (14).png,stego,0.97598,0.973534,0.959446

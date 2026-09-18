@@ -1,0 +1,3 @@
+image,image_type,E_pairs,O_pairs,EE_pairs,OO_pairs,total_pairs,p_estimate,D_asymmetry,method
+stego (14).png,cover,65554,65555,65440,65594,262143,8e-06,-1,SPA (Dumitrescu et al. 2003)
+stego (14).png,stego,65554,65555,65440,65594,262143,8e-06,-1,SPA (Dumitrescu et al. 2003)
