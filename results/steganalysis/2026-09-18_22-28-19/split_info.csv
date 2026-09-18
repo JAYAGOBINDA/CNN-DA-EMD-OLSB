@@ -1,0 +1,2 @@
+total_pairs,total_samples,total_image_pairs,train_samples,train_pairs,val_samples,val_pairs,test_samples,test_pairs,train_ratio_target,val_ratio_target,train_ratio_actual,val_ratio_actual,test_ratio_actual,split_policy,split_method,patch_size,patch_stride,n_epochs,batch_size,learning_rate,train_patches,val_patches,test_patches,total_patches
+2,2,2,1,1,0,0,1,1,0.7,0.15,0.5,0.0,0.5,Pair-based splitting: cover and stego remain in identical split.,Strict pair-based splitting — cover and stego remain together in same split (zero data leakage),64,32,15,32,0.0005,450,0,1922,2372

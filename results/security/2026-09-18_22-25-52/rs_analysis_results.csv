@@ -1,0 +1,5 @@
+image,image_type,R_rate,S_rate,RM_rate,SM_rate,p_estimate,groups_analysed,method
+stego (15).png,cover,0.37692,0.27422,0.39196,0.27934,0.0,50000,RS Analysis (Fridrich et al. 2001)
+stego (15).png,stego,0.39888,0.2754,0.3951,0.2738,0.0,50000,RS Analysis (Fridrich et al. 2001)
+stego (14).png,cover,0.39888,0.2754,0.3951,0.2738,0.0,50000,RS Analysis (Fridrich et al. 2001)
+stego (14).png,stego,0.37692,0.27422,0.39196,0.27934,0.0,50000,RS Analysis (Fridrich et al. 2001)

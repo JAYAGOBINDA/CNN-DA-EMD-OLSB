@@ -443,7 +443,7 @@ elif page == "📥 Embed Payload (Proposed)":
                                 )
                                 last_err = None
                                 break
-                            except ValueError as ve:
+                            except Exception as ve:
                                 last_err = ve
                                 budget = max(48, int(budget * 0.45))
                         if last_err is not None:

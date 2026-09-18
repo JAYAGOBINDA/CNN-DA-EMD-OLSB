@@ -539,16 +539,39 @@ def embed_cnn_da_emd_olsb(
 
     # Pre-check: even the bare secret (no side info) must fit in carrier
     if raw_body_bits > usable_body_capacity:
-        if payload_type == 1:
-            avail_bytes = max(48, int(usable_body_capacity // 8 * 0.45) - 64)
-            opt_data, _, _ = optimize_secret_image(secret_data, avail_bytes)
-            secret_data = opt_data
-            payload_bytes_est = prepare_payload(
-                secret_data, password, t1, t2, payload_type, gamma=gamma,
-                location_map_data=None, alpha=alpha, beta=beta
-            )
-            body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
-            raw_body_bits = len(body_est) * 8
+        is_img = (payload_type == 1)
+        if not is_img and len(secret_data) >= 8:
+            if (secret_data.startswith(b'\x89PNG\r\n\x1a\n') or
+                secret_data.startswith(b'\xff\xd8\xff') or
+                (secret_data.startswith(b'RIFF') and b'WEBP' in secret_data[:16]) or
+                secret_data.startswith(b'BM') or
+                secret_data.startswith(b'GIF8')):
+                is_img = True
+                payload_type = 1
+            else:
+                try:
+                    from PIL import Image as _PILImg
+                    import io as _io
+                    _PILImg.open(_io.BytesIO(secret_data)).verify()
+                    is_img = True
+                    payload_type = 1
+                except Exception:
+                    is_img = False
+
+        if is_img:
+            target_avail = max(48, int(usable_body_capacity // 8 * 0.45) - 64)
+            for _attempt in range(6):
+                opt_data, _, _ = optimize_secret_image(secret_data, target_avail)
+                secret_data = opt_data
+                payload_bytes_est = prepare_payload(
+                    secret_data, password, t1, t2, payload_type=1, gamma=gamma,
+                    location_map_data=None, alpha=alpha, beta=beta
+                )
+                body_est = payload_bytes_est[HEADER_SIZE_BYTES:]
+                raw_body_bits = len(body_est) * 8
+                if raw_body_bits <= usable_body_capacity:
+                    break
+                target_avail = max(32, int(target_avail * 0.6))
         else:
             safe_est_bytes = max(64, int(usable_body_capacity // 8 * 0.45))
             raise ValueError(

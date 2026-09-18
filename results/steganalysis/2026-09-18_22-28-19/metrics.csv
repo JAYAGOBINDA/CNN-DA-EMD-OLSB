@@ -1,0 +1,2 @@
+accuracy,precision,recall,f1_score,roc_auc,is_collapsed,collapse_warning,actual_cover_count,actual_stego_count,pred_cover_count,pred_stego_count,device,classifier
+0.5,0.5,0.7357,0.5954,0.5,False,,961,961,508,1414,cpu,"SteganalysisNet (SRM-Inspired CNN, PyTorch)"
